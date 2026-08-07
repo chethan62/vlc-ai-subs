@@ -77,12 +77,12 @@ function create_dialog()
     model_dropdown:add_value("large (best quality)", 5)
 
     dlg:add_label("Language:", 1, 3, 1, 1)
-    lang_input = dlg:add_text_input("en", 2, 3, 2, 1)
+    lang_input = dlg:add_text_input("auto", 2, 3, 2, 1)
 
     dlg:add_label("Task:", 1, 4, 1, 1)
     task_dropdown = dlg:add_dropdown(2, 4, 2, 1)
-    task_dropdown:add_value("Transcribe (same language)", 1)
-    task_dropdown:add_value("Translate to English", 2)
+    task_dropdown:add_value("Translate to English", 1)
+    task_dropdown:add_value("Transcribe (same language)", 2)
 
     dlg:add_button("Generate", start_generation, 1, 5, 3, 1)
     status_label = dlg:add_label("Ready. Play a media file and click Generate.", 1, 6, 3, 1)
@@ -101,8 +101,8 @@ function get_model_name()
 end
 
 function get_task()
-    if task_dropdown:get_value() == 2 then return "translate" end
-    return "transcribe"
+    if task_dropdown:get_value() == 2 then return "transcribe" end
+    return "translate"
 end
 
 function get_mode()
