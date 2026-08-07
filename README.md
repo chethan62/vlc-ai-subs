@@ -37,6 +37,35 @@ Then:
 3. **View → AI Subs Generator**
 4. Click **Generate**
 
+## GPU acceleration
+
+The backend auto-detects a CUDA device and runs faster-whisper on the GPU using
+`int8_float16` (VRAM-friendly on ≤4GB cards). It **pre-loads the CUDA runtime
+libraries via ctypes** so it works even when VLC launches it without
+`LD_LIBRARY_PATH` set. If no GPU is found it falls back to CPU (`float32`).
+
+Tune at runtime via environment variables:
+
+| Env var | Values | Default |
+|---------|--------|---------|
+| `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` \| (empty = auto) | auto |
+| `VSCL_AISUBS_COMPUTE` | `int8_float16` \| `int8_float32` \| `float16` \| `float32`... | auto |
+| `VSCL_AISUBS_MODEL_CACHE` | dir for HF model downloads | `~/.cache/huggingface` |
+
+To force CPU (e.g. to slim VRAM for other apps):
+```bash
+VSCL_AISUBS_DEVICE=cpu vlc
+```
+
+The backend also accepts an optional 6th arg for an explicit SRT output path
+(defaults to writing `<media_name>.srt` next to the media file).
+
+## Manual usage
+
+```bash
+python3 aisubs_whisper.py <media> <model> <lang> <task> [out_file] [srt_path]
+```
+
 ## Requirements
 
 - Python 3.8+
