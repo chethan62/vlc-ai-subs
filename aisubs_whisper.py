@@ -235,6 +235,76 @@ def transcribe_openai_whisper(media_path, model_name, lang, task):
             yield {"start": seg["start"], "end": seg["end"], "text": text}
 
 
+# ── whisper.cpp (Vulkan/CPU) backend ──────────────────────────────────────
+
+WHISPER_CONFIG = os.path.expanduser("~/.local/share/whisper-cpp/vlc-ai-subs.conf")
+
+
+def find_whisper_cpp():
+    """Return (binary, model) if the whisper.cpp installer config exists, else None."""
+    if not os.path.isfile(WHISPER_CONFIG):
+        return None
+    cfg = {}
+    try:
+        with open(WHISPER_CONFIG) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    cfg[k.strip()] = v.strip()
+    except OSError:
+        return None
+    binary = cfg.get("whisper_bin", "")
+    model = cfg.get("whisper_model", "")
+    if not binary or not os.path.isfile(binary) or not os.path.isfile(model):
+        return None
+    return binary, model
+
+
+def transcribe_whisper_cpp(media_path, binary, model, lang, task):
+    """Transcribe using whisper.cpp CLI (ggml; Vulkan GPU when built with it).
+
+    Parses the `-oj` JSON output — segments carry ms-precision
+    `offsets.from/to` and `text`. Uses the native decoder, so no
+    ffmpeg/pyav decode dependency for the media side either.
+    """
+    import json as _json
+    import subprocess
+
+    emit({"type": "status", "msg": f"whisper.cpp: {os.path.basename(binary)} ({model})"})
+
+    cmd = [binary, "-m", model, "-f", media_path, "-oj", "-of", "-"]
+    # language / task
+    if lang:
+        cmd += ["-l", lang]
+    if task == "translate":
+        cmd += ["-tr"]
+
+    emit({"type": "status", "msg": "Transcribing..."})
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
+
+    if proc.returncode != 0:
+        emit({"type": "error", "msg": "whisper.cpp failed: " + (proc.stderr or "").strip()[:500]})
+        return
+
+    # -oj with -of "-" writes JSON to stdout
+    try:
+        data = _json.loads(proc.stdout)
+    except ValueError:
+        # some builds write to <of>.json even with "-of -"; fall back to stderr scan
+        emit({"type": "error", "msg": "whisper.cpp: could not parse JSON output"})
+        return
+
+    for seg in data.get("transcription", []):
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        off = seg.get("offsets", {})
+        start = (off.get("from") or 0) / 1000.0
+        end = (off.get("to") or start) / 1000.0
+        yield {"start": start, "end": end, "text": text}
+
+
 def main():
     global _out_file
 
@@ -280,7 +350,12 @@ def main():
             sys.exit(1)
 
     # Choose transcription function
-    if backend == "faster-whisper":
+    # Priority: whisper.cpp (Vulkan/GPU, zero Python deps) → faster-whisper → openai-whisper
+    wcpp = find_whisper_cpp()
+    if wcpp and backend == "faster-whisper":
+        binary, model_path = wcpp
+        segments_iter = transcribe_whisper_cpp(media_path, binary, model_path, language, task)
+    elif backend == "faster-whisper":
         segments_iter = transcribe_faster_whisper(media_path, model_name, language, task)
     else:
         segments_iter = transcribe_openai_whisper(media_path, model_name, language, task)
