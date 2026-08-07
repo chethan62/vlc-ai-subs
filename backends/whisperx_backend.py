@@ -13,7 +13,7 @@ from typing import Iterable
 
 from .base import TranscriptionBackend
 
-_RUNNER = os.path.join(os.path.dirname(__file__), "whisperx_runner.py")
+_RUNNER = os.path.expanduser("~/.local/share/vlc-ai-subs/whisperx_runner.py")
 _VENV = os.path.expanduser("~/.local/share/vlc-ai-subs/venv-whisperx")
 _PYTHON = os.path.join(_VENV, "bin", "python3") if os.path.isdir(_VENV) else os.path.join(_VENV, "bin", "python")
 
@@ -38,8 +38,11 @@ class WhisperXBackend(TranscriptionBackend):
             _PYTHON, "-u", _RUNNER,
             media_path, model_name, language or "auto", task,
         ]
+        # Run with clean PYTHONPATH — the backends/ directory contains modules
+        # (faster_whisper.py, moonshine.py) that shadow pip-installed packages.
+        env = {**os.environ, "PYTHONPATH": ""}
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1200,
+            cmd, capture_output=True, text=True, timeout=1200, env=env,
         )
         if proc.returncode != 0:
             raise RuntimeError(

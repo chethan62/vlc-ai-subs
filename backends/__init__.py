@@ -30,7 +30,7 @@ def resolve_backend() -> "TranscriptionBackend":
     # ── WhisperX (word-aligned) ──
     if not forced or forced == "whisperx":
         try:
-            from backends.whisperx import WhisperXBackend
+            from backends.whisperx_backend import WhisperXBackend
             be = WhisperXBackend.detect()
             if be:
                 return be
