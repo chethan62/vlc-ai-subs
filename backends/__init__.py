@@ -56,6 +56,16 @@ def resolve_backend() -> "TranscriptionBackend":
         except Exception as exc:
             logger.debug("moonshine: %s", exc)
 
+    # ── sherpa-onnx (ONNX runtime, multi-model) ──
+    if not forced or forced == "sherpa_onnx":
+        try:
+            from backends.sherpa_onnx import SherpaOnnxBackend
+            be = SherpaOnnxBackend.detect()
+            if be:
+                return be
+        except Exception as exc:
+            logger.debug("sherpa-onnx: %s", exc)
+
     # ── openai-whisper (CPU) ──
     if not forced or forced == "openai_whisper":
         try:
