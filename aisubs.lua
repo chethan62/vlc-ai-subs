@@ -77,7 +77,7 @@ function create_dialog()
     model_dropdown:add_value("large (best quality)", 5)
 
     dlg:add_label("Language:", 1, 3, 1, 1)
-    lang_input = dlg:add_text_input("auto", 2, 3, 2, 1)
+    lang_input = dlg:add_text_input("en", 2, 3, 2, 1)
 
     dlg:add_label("Task:", 1, 4, 1, 1)
     task_dropdown = dlg:add_dropdown(2, 4, 2, 1)
