@@ -27,13 +27,16 @@ function descriptor()
     }
 end
 
-local dlg          = nil
-local model_dropdown = nil
-local lang_input   = nil
-local task_dropdown = nil
-local mode_dropdown = nil
-local status_label = nil
-local osd_channel  = nil
+local dlg            = nil
+local engine_dropdown = nil
+local model_dropdown  = nil
+local lang_input      = nil
+local task_dropdown   = nil
+local mode_dropdown   = nil
+local status_label    = nil
+local progress_bar    = nil
+local debug_label     = nil
+local osd_channel     = nil
 
 -- Polling state (set by start_generation, used by poll_progress)
 local _poll_tmp      = nil
