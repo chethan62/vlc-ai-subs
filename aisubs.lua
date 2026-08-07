@@ -36,11 +36,13 @@ local status_label = nil
 local osd_channel  = nil
 
 -- Polling state (set by start_generation, used by poll_progress)
-local _poll_tmp   = nil
-local _poll_mode  = nil
-local _poll_model = nil
-local _poll_tmr   = nil
-local _poll_secs  = 0
+local _poll_tmp      = nil
+local _poll_mode     = nil
+local _poll_model    = nil
+local _poll_tmr      = nil
+local _poll_secs     = 0
+local _poll_duration = 0
+local _poll_est_total = 30
 local POLL_US     = 1000000  -- poll every 1 second (was 3s)
 
 ----------------------------------------------------------------
@@ -101,6 +103,8 @@ function create_dialog()
 
     dlg:add_button("Generate", start_generation, 1, 6, 3, 1)
     status_label = dlg:add_label("Ready. Play a media file and click Generate.", 1, 7, 3, 1)
+    progress_bar = dlg:add_progress_bar(0, 1, 8, 3, 1)
+    debug_label  = dlg:add_label("", 1, 9, 3, 1)
     dlg:show()
 end
 
@@ -197,6 +201,18 @@ function get_temp_file()
         tmp = os.getenv("TMPDIR") or "/tmp"
         return tmp .. "/aisubs_" .. os.time() .. ".txt"
     end
+end
+
+function get_media_duration()
+    -- Try VLC player first (currently playing media)
+    local item = get_input_item()
+    if item then
+        local dur = item:duration()  -- returns milliseconds, or -1
+        if dur and dur > 0 then
+            return dur / 1000  -- convert to seconds
+        end
+    end
+    return 0
 end
 
 ----------------------------------------------------------------
@@ -363,12 +379,27 @@ function start_generation()
         os.execute(cmd .. " &")
     end
 
-    -- Poll tmp_file every 3 s; VLC's thread stays free the whole time
+    -- Poll tmp_file every second; VLC's thread stays free the whole time
     _poll_tmp   = tmp_file
     _poll_mode  = mode
     _poll_model = model
     _poll_secs  = 0
+
+    -- Estimate total time: rough RTF × audio duration
+    local duration = get_media_duration()
+    _poll_duration = duration or 0
+    if _poll_duration > 0 then
+        -- GPU ≈ 0.3× realtime, CPU ≈ 2× — we use 0.5 as a balanced guess
+        _poll_est_total = _poll_duration * 0.5
+    else
+        _poll_est_total = 30  -- unknown, guess 30s
+    end
+
     set_status("Transcribing with " .. model .. "... please wait")
+    progress_bar:set_value(0)
+
+    -- Show debug command so user can run it from terminal if needed
+    debug_label:set_text("Debug: " .. cmd)
     _poll_tmr = vlc.timer(poll_progress)
     _poll_tmr:schedule(POLL_US)
 end
@@ -380,10 +411,17 @@ end
 function poll_progress()
     _poll_secs = _poll_secs + (POLL_US / 1000000)
 
+    -- Update progress bar based on elapsed vs estimated
+    if _poll_est_total > 0 then
+        local pct = math.min(95, (_poll_secs / _poll_est_total) * 100)
+        progress_bar:set_value(pct)
+    end
+
     local f = io.open(_poll_tmp, "r")
     if not f then
         -- Temp file gone — shouldn't happen; keep waiting
-        set_status(string.format("Transcribing with %s... %ds", _poll_model, _poll_secs))
+        local eta = math.max(0, _poll_est_total - _poll_secs)
+        set_status(string.format("Transcribing with %s... %ds  ETA ~%ds", _poll_model, _poll_secs, eta))
         _poll_tmr:schedule(POLL_US)
         return
     end
@@ -403,9 +441,11 @@ function poll_progress()
     if d and (d.type == "done" or d.type == "error") then
         -- Python finished — process results
         _poll_tmr = nil
+        progress_bar:set_value(100)
         process_results(_poll_tmp, _poll_mode)
     else
-        set_status(string.format("Transcribing with %s... %ds", _poll_model, _poll_secs))
+        local eta = math.max(0, _poll_est_total - _poll_secs)
+        set_status(string.format("Transcribing with %s... %ds  ETA ~%ds", _poll_model, _poll_secs, eta))
         _poll_tmr:schedule(POLL_US)
     end
 end
