@@ -41,7 +41,7 @@ local _poll_mode  = nil
 local _poll_model = nil
 local _poll_tmr   = nil
 local _poll_secs  = 0
-local POLL_US     = 3000000  -- poll every 3 seconds
+local POLL_US     = 1000000  -- poll every 1 second (was 3s)
 
 ----------------------------------------------------------------
 -- Lifecycle
