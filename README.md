@@ -149,6 +149,31 @@ aisubs_whisper.py          ← CLI entry-point (parses args, resolves backend)
 | `medium` | Slow | Great | ~5 GB | ~1.5 GB |
 | `large` | Slowest | Best | ~10 GB | ~3 GB |
 
+## Testing
+
+Verify everything works after install:
+
+```bash
+# 1. Run the backend directly (bypasses VLC)
+~/.local/share/vlc-ai-subs/venv/bin/python \
+  ~/.local/share/vlc-ai-subs/aisubs_whisper.py \
+  /path/to/video.mp4 recommended auto translate
+
+# 2. Check the .srt file written next to the video
+ls -la /path/to/video.srt
+
+# 3. Verify Vulkan GPU is active
+~/.local/share/whisper-cpp/whisper-cli \
+  -m ~/.local/share/whisper-cpp/ggml-small.bin -f /path/to/video.mp4 -oj -of - 2>&1 | head -3
+# Should show: "using Vulkan0 backend" + "NVIDIA GeForce GTX 1650"
+
+# 4. Compare backends
+VSCL_AISUBS_BACKEND=moonshine ~/.local/share/vlc-ai-subs/venv/bin/python \
+  ~/.local/share/vlc-ai-subs/aisubs_whisper.py video.mp4 recommended auto translate
+```
+
+In VLC: restart → open a video → **View → AI Subs Generator** → click **Generate**.
+
 ## Options
 
 - **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, etc.
