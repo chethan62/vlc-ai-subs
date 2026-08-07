@@ -1,9 +1,9 @@
 """
 Moonshine backend — ultra-fast ONNX-based STT for quick preview subtitles.
 
-Moonshine (useful-inc / moonshine-ai) is a tiny speech-to-text model designed
-for edge devices.  ~100× faster than Whisper base, good enough for quick
-rough-draft subtitles or realtime captioning inside VLC.
+Moonshine (useful-inc / moonshine-ai) is a tiny streaming speech-to-text model
+designed for edge devices.  ~100× faster than Whisper base, good enough for
+quick rough-draft subtitles or realtime captioning inside VLC.
 
 Install:  pip install moonshine-voice
 
@@ -16,7 +16,7 @@ from .base import TranscriptionBackend
 
 
 class MoonshineBackend(TranscriptionBackend):
-    """Transcribe via Moonshine — fastest option, smallest footprint."""
+    """Transcribe via Moonshine-voice — fastest option, smallest footprint."""
 
     @classmethod
     def detect(cls) -> "MoonshineBackend | None":
@@ -31,31 +31,43 @@ class MoonshineBackend(TranscriptionBackend):
         self, media_path: str, model_name: str, language: str | None, task: str
     ) -> Iterable[dict]:
         import moonshine_voice
+        import soundfile as sf
 
-        # Moonshine models: tiny, base. Map Whisper names down.
-        ms_model = model_name
-        if model_name in ("small", "medium", "large"):
-            ms_model = "base"
+        # Resolve model: map Whisper model names to Moonshine arch
+        model_path, model_arch = moonshine_voice.get_model_for_language(
+            language or "en"
+        )
 
-        try:
-            transcriber = moonshine_voice.Transcriber(model=ms_model)
-            result = transcriber.transcribe(media_path)
-        except Exception:
-            # Fallback: try the lower-level API
-            model = moonshine_voice.get_model_for_language(language or "en")
-            result = model.transcribe(media_path)
+        transcriber = moonshine_voice.Transcriber(
+            model_path=model_path,
+            model_arch=model_arch,
+        )
 
-        # Moonshine returns flat text with optional timestamps
-        text = ""
-        if isinstance(result, str):
-            text = result.strip()
-        elif isinstance(result, dict):
-            text = (result.get("text") or "").strip()
-        else:
-            text = str(result).strip()
+        # Load audio as float32 mono at 16 kHz (Moonshine's native rate)
+        audio, sr = sf.read(media_path, dtype="float32", always_2d=True)
+        audio = audio[:, 0].tolist()  # mono, Python list
 
-        if text:
-            yield {"start": 0, "end": result.get("duration", 1) if isinstance(result, dict) else 1, "text": text}
+        transcript = transcriber.transcribe_without_streaming(audio, sr)
+
+        # transcript.lines is a list of TranscriptLine objects
+        lines = getattr(transcript, "lines", [])
+        if not lines:
+            text = getattr(transcript, "text", "") or str(transcript)
+            if text.strip():
+                yield {"start": 0, "end": len(audio) / sr, "text": str(text).strip()}
+            return
+
+        for line in lines:
+            text = (getattr(line, "text", "") or "").strip()
+            if not text:
+                continue
+            start_ms = getattr(line, "start_ms", 0) or 0
+            end_ms = getattr(line, "end_ms", 0) or start_ms + 3000
+            yield {
+                "start": start_ms / 1000.0,
+                "end": end_ms / 1000.0,
+                "text": text,
+            }
 
     @staticmethod
     def name() -> str:
