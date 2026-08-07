@@ -343,7 +343,7 @@ function start_generation()
         if engine ~= "" then
             env_prefix = "VSCL_AISUBS_BACKEND=" .. engine .. " "
         end
-        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" &',
+        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s"',
             env_prefix, python, script, media_path, model, language, task, tmp_file)
     end
 
@@ -351,13 +351,17 @@ function start_generation()
     vlc.msg.info("[AI Subs] media:  " .. media_path)
     vlc.msg.info("[AI Subs] tmp:    " .. tmp_file)
 
-    local pipe = io.popen(cmd)
-    if not pipe then
-        set_status("Error: failed to launch Python. Check VLC logs.")
-        return
+    -- Launch via os.execute with & for true non-blocking background.
+    -- io.popen blocks in VLC's Lua sandbox; os.execute returns instantly.
+    if is_windows() then
+        local ok = os.execute(cmd)
+        if ok ~= 0 then
+            set_status("Error: failed to launch Python. Check VLC logs.")
+            return
+        end
+    else
+        os.execute(cmd .. " &")
     end
-    pipe:read("*a")  -- returns immediately (process is backgrounded)
-    pipe:close()
 
     -- Poll tmp_file every 3 s; VLC's thread stays free the whole time
     _poll_tmp   = tmp_file
