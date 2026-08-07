@@ -69,10 +69,13 @@ function create_dialog()
     if dlg then dlg:delete() end
     dlg = vlc.dialog("AI Subs Generator")
 
-    dlg:add_label("Mode:", 1, 1, 1, 1)
-    mode_dropdown = dlg:add_dropdown(2, 1, 2, 1)
-    mode_dropdown:add_value("Real-time OSD", 1)
-    mode_dropdown:add_value("Generate & Load SRT", 2)
+    dlg:add_label("Engine:", 1, 1, 1, 1)
+    engine_dropdown = dlg:add_dropdown(2, 1, 2, 1)
+    engine_dropdown:add_value("Auto (best available)", 0)
+    engine_dropdown:add_value("whisper.cpp (Vulkan)", 1)
+    engine_dropdown:add_value("WhisperX (word-aligned)", 2)
+    engine_dropdown:add_value("faster-whisper (CUDA)", 3)
+    engine_dropdown:add_value("Moonshine (fast preview)", 4)
 
     dlg:add_label("Model:", 1, 2, 1, 1)
     model_dropdown = dlg:add_dropdown(2, 2, 2, 1)
@@ -91,8 +94,13 @@ function create_dialog()
     task_dropdown:add_value("Translate to English", 1)
     task_dropdown:add_value("Transcribe (same language)", 2)
 
-    dlg:add_button("Generate", start_generation, 1, 5, 3, 1)
-    status_label = dlg:add_label("Ready. Play a media file and click Generate.", 1, 6, 3, 1)
+    dlg:add_label("Mode:", 1, 5, 1, 1)
+    mode_dropdown = dlg:add_dropdown(2, 5, 2, 1)
+    mode_dropdown:add_value("Real-time OSD", 1)
+    mode_dropdown:add_value("Generate & Load SRT", 2)
+
+    dlg:add_button("Generate", start_generation, 1, 6, 3, 1)
+    status_label = dlg:add_label("Ready. Play a media file and click Generate.", 1, 7, 3, 1)
     dlg:show()
 end
 
@@ -110,6 +118,13 @@ end
 function get_task()
     if task_dropdown:get_value() == 2 then return "transcribe" end
     return "translate"
+end
+
+function get_engine()
+    local engines = {"", "whisper_cpp", "whisperx", "faster_whisper", "moonshine"}
+    local id = engine_dropdown:get_value()
+    if id and id >= 0 and id <= 4 then return engines[id + 1] end
+    return ""
 end
 
 function get_mode()
@@ -323,8 +338,13 @@ function start_generation()
         vf:close()
         cmd = 'wscript.exe /nologo "' .. vbs_file .. '"'
     else
-        cmd = string.format('"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" &',
-            python, script, media_path, model, language, task, tmp_file)
+        local engine = get_engine()
+        local env_prefix = ""
+        if engine ~= "" then
+            env_prefix = "VSCL_AISUBS_BACKEND=" .. engine .. " "
+        end
+        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" &',
+            env_prefix, python, script, media_path, model, language, task, tmp_file)
     end
 
     vlc.msg.info("[AI Subs] python: " .. python)
