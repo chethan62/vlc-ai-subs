@@ -47,7 +47,10 @@ local POLL_US     = 1000000  -- poll every 1 second (was 3s)
 -- Lifecycle
 ----------------------------------------------------------------
 
-function activate()   create_dialog() end
+function activate()
+    vlc.msg.info("[AI Subs] activate() called")
+    create_dialog()
+end
 function deactivate() if dlg then dlg:delete(); dlg = nil end end
 function close()      deactivate() end
 
@@ -59,6 +62,10 @@ function trigger_menu(id) if id == 1 then create_dialog() end end
 ----------------------------------------------------------------
 
 function create_dialog()
+    vlc.msg.info("[AI Subs] create_dialog()")
+    -- OSD fallback: always visible even if dialog fails on Wayland
+    vlc.osd.message("AI Subs Generator ready — check View menu", 3)
+
     if dlg then dlg:delete() end
     dlg = vlc.dialog("AI Subs Generator")
 
