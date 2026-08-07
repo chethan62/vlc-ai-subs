@@ -12,7 +12,10 @@ Architecture
   backends/
     base.py                Abstract TranscriptionBackend
     whisper_cpp.py         whisper.cpp (Vulkan/CPU) — preferred
+    whisperx_backend.py    WhisperX (word-aligned, Python 3.12 subprocess)
     faster_whisper.py      faster-whisper (CUDA/CPU) — fallback
+    moonshine.py           Moonshine (CPU, ultra-fast)
+    sherpa_onnx.py         sherpa-onnx (ONNX runtime)
     openai_whisper.py      openai-whisper (CPU) — last resort
 
 Usage
@@ -26,13 +29,69 @@ Output (stdout) — one JSON object per line
   {"type": "error", "msg": "..."}
 """
 
-import sys
 import os
+import sys
 
 from core.emitter import Emitter
 from core.srt import write_srt
 from backends import resolve_backend
 
+
+# ── Hardware-aware model recommendation ──────────────────────────────────
+
+def _detect_vram_mb() -> int:
+    """Return GPU VRAM in MiB via nvidia-smi, or 0 if detection fails."""
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader"],
+            text=True, timeout=5,
+        )
+        return int(out.strip().split()[0])
+    except Exception:
+        return 0
+
+
+def _detect_ram_gb() -> int:
+    """Return system RAM in GiB from /proc/meminfo."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return kb // (1024 * 1024)  # KB → GiB
+    except Exception:
+        pass
+    return 4  # conservative default
+
+
+def _recommend_model(backend_name: str) -> str:
+    """Pick the best model size based on available VRAM and system RAM."""
+    vram_mb = _detect_vram_mb()
+    ram_gb = _detect_ram_gb()
+    base = backend_name.split()[0]  # "whisper.cpp", "faster-whisper", etc.
+
+    if base in ("whisper.cpp", "whisperx"):
+        # GGML / ctranslate2 — VRAM-bound, models are memory-mapped
+        if vram_mb >= 3500:   return "large"
+        elif vram_mb >= 2000: return "medium"
+        elif vram_mb >= 600:  return "small"
+        else:                 return "base"
+
+    elif base in ("faster-whisper",):
+        # ctranslate2 with int8_float16 ≈ 2× VRAM vs GGML
+        if vram_mb >= 8000:   return "large"
+        elif vram_mb >= 4000: return "medium"
+        elif vram_mb >= 2000: return "small"
+        else:                 return "base"
+
+    else:  # moonshine, sherpa-onnx, openai-whisper — CPU/RAM-bound
+        if ram_gb >= 8:       return "medium"
+        elif ram_gb >= 4:     return "small"
+        else:                 return "base"
+
+
+# ── CLI entry-point ──────────────────────────────────────────────────────
 
 def main():
     if len(sys.argv) < 5:
@@ -62,17 +121,9 @@ def main():
         emitter.close()
         sys.exit(1)
 
-    # Resolve "recommended" → best model for this backend
+    # Resolve "recommended" → best model for this backend + hardware
     if model_name == "recommended":
-        backend_name = backend.name().split()[0]  # e.g. "whisper.cpp", "whisperx", "faster-whisper"
-        recommended_map = {
-            "whisper.cpp":    "small",      # installer default model
-            "whisperx":       "small",      # aligned, good balance
-            "faster-whisper": "small",      # CUDA, fits 4GB VRAM
-            "moonshine":      "base",       # fastest option is base
-            "openai-whisper": "base",       # CPU-safe default
-        }
-        model_name = recommended_map.get(backend_name, "small")
+        model_name = _recommend_model(backend.name())
 
     emitter.emit({
         "type": "status",
@@ -127,7 +178,6 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         import traceback
-        # Last-resort emit — no guarantee the Emitter is still functional
         try:
             print(
                 '{"type": "error", "msg": "%s"}' % str(exc).replace('"', '\\"'),
