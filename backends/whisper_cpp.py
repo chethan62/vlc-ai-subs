@@ -54,7 +54,7 @@ class WhisperCppBackend(TranscriptionBackend):
             cmd += ["-tr"]
 
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=None,
+            cmd, capture_output=True, text=True, timeout=600,
         )
         if proc.returncode != 0:
             raise RuntimeError(

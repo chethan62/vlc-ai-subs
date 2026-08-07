@@ -52,47 +52,43 @@ class SherpaOnnxBackend(TranscriptionBackend):
         import soundfile as sf
 
         model_dir = self._model_dir
-        encoder = os.path.join(model_dir, "encoder.onnx") or os.path.join(model_dir, "encoder.int8.onnx")
-        decoder = os.path.join(model_dir, "decoder.onnx") or os.path.join(model_dir, "decoder.int8.onnx")
+
+        # Whisper (encoder+decoder+tokens)
+        encoder = os.path.join(model_dir, "encoder.int8.onnx")
+        if not os.path.isfile(encoder):
+            encoder = os.path.join(model_dir, "encoder.onnx")
+        decoder = os.path.join(model_dir, "decoder.int8.onnx")
+        if not os.path.isfile(decoder):
+            decoder = os.path.join(model_dir, "decoder.onnx")
         tokens = os.path.join(model_dir, "tokens.txt")
 
-        # Also support non-Whisper models (single model.onnx + tokens.txt)
+        # SenseVoice / Paraformer (single model.onnx + tokens.txt)
         single_model = os.path.join(model_dir, "model.onnx")
         single_tokens = os.path.join(model_dir, "tokens.txt")
 
-        conf = sherpa_onnx.OfflineRecognizerConfig()
-
         if os.path.isfile(encoder) and os.path.isfile(decoder) and os.path.isfile(tokens):
-            # Whisper-style (encoder+decoder)
-            conf.model_config.whisper = sherpa_onnx.OfflineWhisperModelConfig(
+            recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
                 encoder=encoder,
                 decoder=decoder,
                 tokens=tokens,
+                model_type=model_name,  # e.g. "small", "base"
+                language=language or "",
+                task=task,
             )
         elif os.path.isfile(single_model) and os.path.isfile(single_tokens):
-            # Generic: try SenseVoice / Paraformer / Qwen3
-            # Fall back to sense_voice config (the most common single-model format)
-            conf.model_config.sense_voice = sherpa_onnx.OfflineSenseVoiceModelConfig(
+            recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=single_model,
                 tokens=single_tokens,
+                use_itn=True,
             )
         else:
             raise RuntimeError(
                 f"No recognisable model layout in {model_dir}. "
                 f"Expected Whisper (encoder.onnx+decoder.onnx+tokens.txt) or "
-                f"generic (model.onnx+tokens.txt)."
+                f"SenseVoice/Paraformer (model.onnx+tokens.txt)."
             )
 
-        # Language and task for Whisper
-        if hasattr(conf.model_config, 'whisper') and conf.model_config.whisper is not None:
-            if language:
-                conf.model_config.whisper.language = language
-            if task:
-                conf.model_config.whisper.task = task
-
-        recognizer = sherpa_onnx.OfflineRecognizer(conf)
         stream = recognizer.create_stream()
-
         audio, sample_rate = sf.read(media_path, dtype="float32", always_2d=True)
         audio = audio[:, 0]  # mono
         stream.accept_waveform(sample_rate, audio)

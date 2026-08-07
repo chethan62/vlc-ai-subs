@@ -70,8 +70,9 @@ class WhisperXBackend(TranscriptionBackend):
         # 2. Align (word-level timestamps) if requested and audio is available
         if self._align and device == "cuda" and result.get("segments"):
             try:
+                lang_code = result.get("language") or language or "en"
                 align_model, metadata = whisperx.load_align_model(
-                    language_code=result.get("language", language or "en"),
+                    language_code=lang_code,
                     device=device,
                 )
                 result = whisperx.align(

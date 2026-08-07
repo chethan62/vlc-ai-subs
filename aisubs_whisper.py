@@ -52,12 +52,14 @@ def main():
 
     if not os.path.isfile(media_path):
         emitter.emit({"type": "error", "msg": f"File not found: {media_path}"})
+        emitter.close()
         sys.exit(1)
 
     try:
         backend = resolve_backend()
     except RuntimeError as exc:
         emitter.emit({"type": "error", "msg": str(exc)})
+        emitter.close()
         sys.exit(1)
 
     # Resolve "recommended" → best model for this backend
@@ -102,7 +104,13 @@ def main():
         emitter.close()
         sys.exit(1)
 
-    # Write SRT
+    # Write SRT (skip if no segments — avoids empty .srt files)
+    if not segments:
+        emitter.emit({"type": "status", "msg": "No speech detected — skipping SRT."})
+        emitter.emit({"type": "done", "segments": 0, "srt_path": None})
+        emitter.close()
+        sys.exit(0)
+
     try:
         srt_path = write_srt(segments, media_path, srt_requested)
     except OSError as exc:
