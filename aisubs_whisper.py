@@ -4,16 +4,29 @@ vlc-ai-subs — Whisper transcription backend.
 
 Transcribes audio from a media file using faster-whisper (or openai-whisper
 as fallback) and streams results as JSON lines to stdout. Also writes a
-standard SRT subtitle file next to the source media.
+standard SRT subtitle file.
+
+Improvements over upstream:
+  * GPU/CUDA auto-detection — uses the fastest available device and the best
+    compute type for it (int8_float16 on GPU for 4GB cards, float32 on CPU).
+  * Device / compute-type / model-cache / output-path override via env vars:
+        VSCL_AISUBS_DEVICE       cuda|cpu|auto        (default auto)
+        VSCL_AISUBS_COMPUTE      int8_float16|int8_float32|float16|float32|...
+                                 (default auto-picked)
+        VSCL_AISUBS_MODEL_CACHE  directory for HF model downloads
+                                 (default ~/.cache/huggingface)
+  * Optionally controlled SRT output path as argv[6]; defaults to media dir.
 
 Usage:
-    python3 aisubs_whisper.py <media_path> <model> <language> <task>
+    python3 aisubs_whisper.py <media> <model> <language> <task> [out_file] [srt_path]
 
 Arguments:
     media_path  Path to the video/audio file
     model       Whisper model size: tiny, base, small, medium, large
     language    Language code (e.g. en, es, hi) or "auto" for detection
     task        "transcribe" or "translate" (translate outputs English)
+    out_file    Optional: JSONL output file that stdout is mirrored to
+    srt_path    Optional: where to write the .srt (defaults to media_dir/<media>.srt)
 
 Output (stdout):
     One JSON object per line:
@@ -39,6 +52,7 @@ def format_srt_timestamp(seconds: float) -> str:
 
 _out_file = None  # optional output file set in main()
 
+
 def emit(data: dict) -> None:
     """Write a JSON line to stdout and to the output file if set."""
     line = json.dumps(data, ensure_ascii=False)
@@ -51,19 +65,142 @@ def emit(data: dict) -> None:
             pass
 
 
+def _cuda_lib_search_dirs():
+    """Return a list of directories likely to contain CUDA runtime libs.
+
+    Cheap, dependency-free discovery used only to pre-load the shared libs
+    ctranslate2 needs, so the plugin works even when VLC launches it without
+    LD_LIBRARY_PATH set.
+    """
+    dirs = []
+    # CUDA_HOME / CUDA_PATH (then lib, lib64)
+    for var in ("CUDA_HOME", "CUDA_PATH"):
+        base = os.environ.get(var)
+        if base:
+            dirs += [os.path.join(base, "lib"), os.path.join(base, "lib64")]
+    # nice, well-known override
+    cu12 = "/usr/local/cuda/lib64"
+    # one-user-level fallback covering the CUDA-canonical /usr/local/cuda/lib*
+    for sub in ("lib", "lib64"):
+        dirs += [os.path.join("/usr/local/cuda", sub)]
+    # user-level ~/.local/cuda12  (matches this box: ~/.local/cuda12/lib)
+    for sub in ("lib", "lib64"):
+        dirs += [os.path.expanduser(os.path.join("~/.local/cuda12", sub))]
+    # also check `nvidia-ctk` style flat layout and ldconfig
+    extra = [
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/wsl/lib",
+        "/opt/cuda/lib64",
+    ]
+    for d in extra:
+        if not os.path.isdir(d):
+            continue
+        # only include if it actually looks like CUDA (has cublas)
+        if os.path.exists(os.path.join(d, "libcublas.so.12")) or \
+           os.path.exists(os.path.join(d, "libcublas.so.13")):
+            dirs.append(d)
+    return dirs
+
+
+def _preload_cuda_libs():
+    """Load the CUDA runtime shared libs ctranslate2 needs (via ctypes)."""
+    # If the env explicitly says CPU, skip CUDA entirely.
+    if os.environ.get("VSCL_AISUBS_DEVICE", "").strip().lower() in ("cpu",):
+        return
+
+    # Sanity: only preload when a CUDA device is actually present.
+    try:
+        import ctypes
+        from ctypes.util import find_library
+    except Exception:
+        return
+
+    # We look for the exact sonames CTranslate2 dlopens at import time.
+    wanted = [
+        "libcublas.so.12",
+        "libcublasLt.so.12",
+        "libcudart.so.12",
+        "libnvblas.so.12",
+    ]
+
+    def candidate_paths(name):
+        """Absolute paths worth trying for a given soname."""
+        for libdir in _cuda_lib_search_dirs():
+            yield os.path.join(libdir, name)
+        # fall back to what the system loader reports last
+        p = find_library(name.split('.')[0])
+        if p:
+            yield p
+
+    loaded_any = False
+    for name in wanted:
+        for p in candidate_paths(name):
+            if os.path.isfile(p):
+                try:
+                    ctypes.CDLL(p)  # raises FileNotFoundError/OSError on failure
+                    loaded_any = True
+                    break
+                except OSError:
+                    continue
+    return loaded_any
+
+
+def detect_device():
+    """Choose the best GPU and compute type for the current hardware.
+
+    CUDA is preferred when ctranslate2 sees a device; falls back to CPU.
+    On GPU, int8_float16 keeps a <4GB card under VRAM while staying fast.
+    """
+    # Try to preload CUDA so ctranslate2 can initialise without env vars.
+    _preload_cuda_libs()
+
+    env_dev = os.environ.get("VSCL_AISUBS_DEVICE", "").strip().lower()
+    if env_dev:
+        device = env_dev
+    else:
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
+                device = "cuda"
+            else:
+                device = "cpu"
+        except Exception:
+            device = "cpu"
+
+    env_ct = os.environ.get("VSCL_AISUBS_COMPUTE", "").strip().lower()
+    if env_ct:
+        if env_ct == "compute":
+            compute = "default"
+        else:
+            compute = env_ct
+    elif device == "cuda":
+        compute = "int8_float16"
+    else:
+        compute = "float32"
+
+    return device, compute
+
+
 def transcribe_faster_whisper(media_path, model_name, lang, task):
     """Transcribe using faster-whisper (CTranslate2 backend)."""
     from faster_whisper import WhisperModel
 
-    emit({"type": "status", "msg": f"Loading {model_name} model..."})
-    model = WhisperModel(model_name, device="cpu", compute_type="float32")
+    device, compute = detect_device()
+    emit({"type": "status", "msg": f"Loading {model_name} on {device} ({compute})..."})
+
+    kw = dict(device=device, compute_type=compute)
+    model_cache = os.environ.get("VSCL_AISUBS_MODEL_CACHE", "").strip()
+    if model_cache:
+        kw["download_root"] = model_cache
+
+    model = WhisperModel(model_name, **kw)
 
     emit({"type": "status", "msg": "Transcribing..."})
     segments_gen, _info = model.transcribe(
         media_path,
         language=lang,
         task=task,
-        beam_size=1,
+        beam_size=(5 if device == "cuda" else 1),
         vad_filter=True,
         vad_parameters={
             "threshold": 0.05,
@@ -102,7 +239,9 @@ def main():
     global _out_file
 
     if len(sys.argv) < 5:
-        emit({"type": "error", "msg": "Usage: aisubs_whisper.py <media> <model> <lang> <task> [out_file]"})
+        emit({"type": "error", "msg": (
+            "Usage: aisubs_whisper.py <media> <model> <lang> <task> [out_file] [srt_path]"
+        )})
         sys.exit(1)
 
     media_path = sys.argv[1]
@@ -116,6 +255,9 @@ def main():
             _out_file = open(sys.argv[5], "w", encoding="utf-8", buffering=1)
         except Exception as e:
             pass  # if we can't open it, stdout-only mode
+
+    # Optional explicit SRT path
+    srt_requested = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6].strip() else None
 
     if not os.path.isfile(media_path):
         emit({"type": "error", "msg": f"File not found: {media_path}"})
@@ -167,9 +309,14 @@ def main():
         emit({"type": "error", "msg": f"Transcription failed: {e}\n{traceback.format_exc()}"})
         sys.exit(1)
 
-    # Write SRT file next to the media
-    base, _ = os.path.splitext(media_path)
-    srt_path = base + ".srt"
+    # Write SRT file (explicit path if given, else next to the media)
+    if srt_requested:
+        srt_path = srt_requested
+        os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
+    else:
+        base, _ = os.path.splitext(media_path)
+        srt_path = base + ".srt"
+
     try:
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(srt_lines))
