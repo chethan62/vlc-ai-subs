@@ -39,23 +39,28 @@ Then:
 
 ## GPU acceleration
 
-The backend auto-detects a CUDA device and runs faster-whisper on the GPU using
-`int8_float16` (VRAM-friendly on ≤4GB cards). It **pre-loads the CUDA runtime
-libraries via ctypes** so it works even when VLC launches it without
-`LD_LIBRARY_PATH` set. If no GPU is found it falls back to CPU (`float32`).
+- **Vulkan (recommended):** run `./install-whisper-cpp.sh [model]` — it builds
+  whisper.cpp v1.9.2 with Vulkan, downloads a Whisper model, and wires it up.
+  The plugin auto-detects whisper-cli and uses it (GPU via Vulkan, no CUDA
+  needed). `MODEL` ∈ tiny/base/small/medium/large (default small). Installable
+  per-user into `~/local/share/whisper-cpp/` — no root, no AUR.
 
-Tune at runtime via environment variables:
+- **CUDA (faster-whisper fallback):** the backend also auto-detects a CUDA
+  device and runs faster-whisper with `int8_float16`. It pre-loads CUDA
+  libs via ctypes so it works even when VLC launches it without
+  `LD_LIBRARY_PATH`. Used only if whisper-cli is not installed.
+
+Backend priority: whisper.cpp (Vulkan) → faster-whisper (CUDA/CPU) → openai-whisper.
+
+To force CPU: `VSCL_AISUBS_DEVICE=cpu vlc`.
+
+Tune at runtime via environment variables (faster-whisper path):
 
 | Env var | Values | Default |
 |---------|--------|---------|
 | `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` \| (empty = auto) | auto |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \| `int8_float32` \| `float16` \| `float32`... | auto |
-| `VSCL_AISUBS_MODEL_CACHE` | dir for HF model downloads | `~/.cache/huggingface` |
-
-To force CPU (e.g. to slim VRAM for other apps):
-```bash
-VSCL_AISUBS_DEVICE=cpu vlc
-```
+| `VSCL_AISUBS_MODEL_CACHE` | dir for HuggingFace model downloads | `~/.cache/huggingface` |
 
 The backend also accepts an optional 6th arg for an explicit SRT output path
 (defaults to writing `<media_name>.srt` next to the media file).
