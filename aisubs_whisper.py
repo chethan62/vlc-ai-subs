@@ -60,6 +60,18 @@ def main():
         emitter.emit({"type": "error", "msg": str(exc)})
         sys.exit(1)
 
+    # Resolve "recommended" → best model for this backend
+    if model_name == "recommended":
+        backend_name = backend.name().split()[0]  # e.g. "whisper.cpp", "whisperx", "faster-whisper"
+        recommended_map = {
+            "whisper.cpp":    "small",      # installer default model
+            "whisperx":       "small",      # aligned, good balance
+            "faster-whisper": "small",      # CUDA, fits 4GB VRAM
+            "moonshine":      "base",       # fastest option is base
+            "openai-whisper": "base",       # CPU-safe default
+        }
+        model_name = recommended_map.get(backend_name, "small")
+
     emitter.emit({
         "type": "status",
         "msg": f"Backend: {backend.name()} — {model_name} ({language or 'auto'}, {task})",

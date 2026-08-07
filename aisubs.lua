@@ -69,6 +69,7 @@ function create_dialog()
 
     dlg:add_label("Model:", 1, 2, 1, 1)
     model_dropdown = dlg:add_dropdown(2, 2, 2, 1)
+    model_dropdown:add_value("Recommended (auto)", 0)
     model_dropdown:add_value("tiny (fastest)", 1)
     model_dropdown:add_value("base (balanced)", 2)
     model_dropdown:add_value("small (accurate)", 3)
@@ -93,10 +94,10 @@ end
 ----------------------------------------------------------------
 
 function get_model_name()
-    local models = {"tiny", "base", "small", "medium", "large"}
+    local models = {"recommended", "tiny", "base", "small", "medium", "large"}
     local id = model_dropdown:get_value()
-    if id and id >= 1 and id <= 5 then return models[id] end
-    return "base"
+    if id and id >= 0 and id <= 5 then return models[id + 1] end
+    return "recommended"
 end
 
 function get_task()
