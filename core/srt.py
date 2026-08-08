@@ -10,11 +10,15 @@ from typing import Iterable
 
 
 def format_timestamp(seconds: float) -> str:
-    """Convert seconds to SRT timestamp (HH:MM:SS,mmm)."""
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds - int(seconds)) * 1000)
+    """Convert seconds to SRT timestamp (HH:MM:SS,mmm).
+
+    Rounds to the nearest millisecond from total-ms math — robust against
+    float representation drift (e.g. 3599.999 stored as 3598.99899...).
+    """
+    total_ms = max(0, round(seconds * 1000))
+    h, rem = divmod(total_ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1_000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 

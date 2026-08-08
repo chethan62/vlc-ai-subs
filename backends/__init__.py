@@ -1,88 +1,34 @@
 """
-Backend registry — auto-detects the best available backend.
+Backend registry — WhisperX is the only transcription backend.
 
-Priority: whisper.cpp (Vulkan) → WhisperX (word-aligned) → faster-whisper
-(CUDA) → Moonshine (fast preview) → openai-whisper (CPU).
+WhisperX (https://github.com/m-bain/whisperX) provides word-level aligned
+timestamps, which are ideal for movie subtitle generation. It runs in its
+own Python 3.12 venv (whisperX requires <3.14); see whisperx_backend.py.
 
-Override with:  VSCL_AISUBS_BACKEND=whisper_cpp|whisperx|faster_whisper|moonshine
+No engine selection — VSCL_AISUBS_BACKEND is ignored. The plugin always
+uses WhisperX.
 """
 
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
 
 def resolve_backend() -> "TranscriptionBackend":
-    """Return the best available TranscriptionBackend instance."""
-    forced = os.environ.get("VSCL_AISUBS_BACKEND", "").strip().lower()
+    """Return the WhisperX backend, or raise if it is not installed."""
+    from backends.whisperx_backend import WhisperXBackend
 
-    # ── whisper.cpp (Vulkan) ──
-    if not forced or forced == "whisper_cpp":
-        try:
-            from backends.whisper_cpp import WhisperCppBackend
-            be = WhisperCppBackend.detect()
-            if be:
-                return be
-        except Exception as exc:
-            logger.debug("whisper.cpp: %s", exc)
-
-    # ── WhisperX (word-aligned) ──
-    if not forced or forced == "whisperx":
-        try:
-            from backends.whisperx_backend import WhisperXBackend
-            be = WhisperXBackend.detect()
-            if be:
-                return be
-        except Exception as exc:
-            logger.debug("whisperx: %s", exc)
-
-    # ── faster-whisper (CUDA) ──
-    if not forced or forced == "faster_whisper":
-        try:
-            import faster_whisper  # noqa: F401
-            from backends.faster_whisper import FasterWhisperBackend
-            return FasterWhisperBackend()
-        except Exception as exc:
-            logger.debug("faster-whisper: %s", exc)
-
-    # ── Moonshine (ultra-fast preview) ──
-    if not forced or forced == "moonshine":
-        try:
-            from backends.moonshine import MoonshineBackend
-            be = MoonshineBackend.detect()
-            if be:
-                return be
-        except Exception as exc:
-            logger.debug("moonshine: %s", exc)
-
-    # ── sherpa-onnx (ONNX runtime, multi-model) ──
-    if not forced or forced == "sherpa_onnx":
-        try:
-            from backends.sherpa_onnx import SherpaOnnxBackend
-            be = SherpaOnnxBackend.detect()
-            if be:
-                return be
-        except Exception as exc:
-            logger.debug("sherpa-onnx: %s", exc)
-
-    # ── openai-whisper (CPU) ──
-    if not forced or forced == "openai_whisper":
-        try:
-            import whisper  # noqa: F401
-            from backends.openai_whisper import OpenAIWhisperBackend
-            return OpenAIWhisperBackend()
-        except Exception as exc:
-            logger.debug("openai-whisper: %s", exc)
-
-    if forced:
-        raise RuntimeError(
-            f"Requested backend '{forced}' is not available. "
-            f"Install the required package and try again."
-        )
+    try:
+        be = WhisperXBackend.detect()
+    except Exception as exc:
+        logger.debug("whisperx: %s", exc)
+        be = None
+    if be:
+        return be
 
     raise RuntimeError(
-        "No Whisper backend found. Install one: ./install-whisper-cpp.sh (Vulkan), "
-        "pip install whisperx (aligned), pip install faster-whisper (CUDA), "
-        "pip install moonshine (fast preview), or pip install openai-whisper (CPU)."
+        "WhisperX is not available. Install it with:\n"
+        "  uv venv --python 3.12 ~/.local/share/vlc-ai-subs/venv-whisperx\n"
+        "  uv pip install --python ~/.local/share/vlc-ai-subs/venv-whisperx/bin/python whisperx\n"
+        "or re-run ./install.sh"
     )

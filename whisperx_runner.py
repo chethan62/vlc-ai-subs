@@ -18,10 +18,11 @@ import sys
 
 
 def format_srt_timestamp(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds - int(seconds)) * 1000)
+    # Mirror of core/srt.py — total-ms math with rounding, float-safe.
+    total_ms = max(0, round(seconds * 1000))
+    h, rem = divmod(total_ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1_000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
@@ -33,6 +34,9 @@ def main():
     if len(sys.argv) < 5:
         emit({"type": "error", "msg": "Usage: runner <media> <model> <lang> <task> [mirror] [srt]"})
         sys.exit(1)
+
+    import time
+    _t0 = time.time()
 
     media_path = sys.argv[1]
     model_name = sys.argv[2]
@@ -57,7 +61,7 @@ def main():
 
     compute = "int8_float16" if device == "cuda" else "float32"
 
-    emit({"type": "status", "msg": f"WhisperX: loading {model_name} on {device}..."})
+    emit({"type": "status", "msg": f"WhisperX: loading {model_name} on {device} ({compute})..."})
 
     # 1. Transcribe
     model = whisperx.load_model(model_name, device, compute_type=compute)
@@ -66,6 +70,10 @@ def main():
         language=language,
         task=task,
     )
+    emit({
+        "type": "status",
+        "msg": f"WhisperX: transcription done (+{time.time() - _t0:.0f}s)",
+    })
 
     # 2. Align (word-level timestamps)
     if device == "cuda" and result.get("segments"):
@@ -78,6 +86,10 @@ def main():
                 result["segments"], align_model, metadata,
                 media_path, device, return_char_alignments=False,
             )
+            emit({
+                "type": "status",
+                "msg": f"WhisperX: word alignment done (+{time.time() - _t0:.1f}s)",
+            })
         except Exception:
             emit({"type": "status", "msg": "Alignment skipped (may need different language model)"})
 

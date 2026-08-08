@@ -31,10 +31,32 @@ Output (stdout) — one JSON object per line
 
 import os
 import sys
+import time
 
 from core.emitter import Emitter
 from core.srt import write_srt
 from backends import resolve_backend
+
+# ── Debug logging ────────────────────────────────────────────────────
+# Enable with a trailing `--debug` CLI arg or VSCL_AISUBS_DEBUG=1.
+# Debug lines go to stderr AND /tmp/aisubs_debug.log (VLC itself shows
+# stderr in its logs; the file survives terminal restarts).
+
+DEBUG_FILE = "/tmp/aisubs_debug.log"
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get("VSCL_AISUBS_DEBUG") == "1" or "--debug" in sys.argv
+
+
+def _log_debug(msg: str) -> None:
+    line = f"[debug {time.strftime('%H:%M:%S')}] {msg}"
+    sys.stderr.write(line + "\n")
+    try:
+        with open(DEBUG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 
 # ── Hardware-aware model recommendation ──────────────────────────────────
@@ -65,35 +87,41 @@ def _detect_ram_gb() -> int:
     return 4  # conservative default
 
 
-def _recommend_model(backend_name: str) -> str:
-    """Pick the best model size based on available VRAM and system RAM."""
+def _recommend_model(backend_name: str = "whisperx") -> str:
+    """Pick the WhisperX model size based on GPU VRAM (system RAM on CPU).
+
+    WhisperX transcribes via faster-whisper (CTranslate2, int8_float16 on
+    CUDA) — roughly 2× the VRAM footprint of GGML models. When a GPU is
+    detected, only VRAM tiering applies (never fall through to RAM sizing,
+    which could over-recommend for a small GPU).
+    """
     vram_mb = _detect_vram_mb()
-    ram_gb = _detect_ram_gb()
-    base = backend_name.split()[0]  # "whisper.cpp", "faster-whisper", etc.
-
-    if base in ("whisper.cpp", "whisperx"):
-        # GGML / ctranslate2 — VRAM-bound, models are memory-mapped
-        if vram_mb >= 3500:   return "large"
-        elif vram_mb >= 2000: return "medium"
-        elif vram_mb >= 600:  return "small"
-        else:                 return "base"
-
-    elif base in ("faster-whisper",):
-        # ctranslate2 with int8_float16 ≈ 2× VRAM vs GGML
+    if vram_mb > 0:
         if vram_mb >= 8000:   return "large"
         elif vram_mb >= 4000: return "medium"
         elif vram_mb >= 2000: return "small"
-        else:                 return "base"
+        return "base"
 
-    else:  # moonshine, sherpa-onnx, openai-whisper — CPU/RAM-bound
-        if ram_gb >= 8:       return "medium"
-        elif ram_gb >= 4:     return "small"
-        else:                 return "base"
+    # No usable GPU — CPU path, bound by system RAM
+    ram_gb = _detect_ram_gb()
+    if ram_gb >= 8:   return "medium"
+    elif ram_gb >= 4: return "small"
+    return "base"
 
 
 # ── CLI entry-point ──────────────────────────────────────────────────────
 
 def main():
+    _t0 = time.time()
+    # --debug may appear anywhere; capture BEFORE stripping, then remove it
+    # so positional parsing is unaffected.
+    debug = _debug_enabled()
+    if "--debug" in sys.argv:
+        sys.argv.remove("--debug")
+    if debug:
+        # Propagate to the WhisperX subprocess (backend dumps runner output)
+        os.environ["VSCL_AISUBS_DEBUG"] = "1"
+
     if len(sys.argv) < 5:
         sys.stderr.write(
             "Usage: aisubs_whisper.py <media> <model> <lang> <task> [out_file] [srt_path]\n"
@@ -106,6 +134,9 @@ def main():
     task = sys.argv[4]
     mirror_file = sys.argv[5] if len(sys.argv) > 5 else None
     srt_requested = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6].strip() else None
+
+    if debug:
+        _log_debug(f"args: media={media_path!r} model={model_name!r} lang={language!r} task={task!r}")
 
     emitter = Emitter(mirror_file)
 
@@ -120,10 +151,16 @@ def main():
         emitter.emit({"type": "error", "msg": str(exc)})
         emitter.close()
         sys.exit(1)
+    if debug:
+        _log_debug(f"backend resolved: {backend.name()} ({time.time() - _t0:.1f}s)")
 
     # Resolve "recommended" → best model for this backend + hardware
     if model_name == "recommended":
         model_name = _recommend_model(backend.name())
+        if debug:
+            _log_debug(
+                f"recommended -> {model_name} (VRAM {_detect_vram_mb()} MiB, RAM {_detect_ram_gb()} GiB)"
+            )
 
     emitter.emit({
         "type": "status",
@@ -133,6 +170,7 @@ def main():
     # Transcribe
     emitter.emit({"type": "status", "msg": "Transcribing..."})
     segments = []
+    _t1 = time.time()
     try:
         for seg in backend.transcribe(media_path, model_name, language, task):
             segment = {
@@ -154,6 +192,8 @@ def main():
         })
         emitter.close()
         sys.exit(1)
+    if debug:
+        _log_debug(f"transcription done: {len(segments)} segments in {time.time() - _t1:.1f}s")
 
     # Write SRT (skip if no segments — avoids empty .srt files)
     if not segments:
@@ -170,6 +210,8 @@ def main():
         sys.exit(1)
 
     emitter.emit({"type": "done", "segments": len(segments), "srt_path": srt_path})
+    if debug:
+        _log_debug(f"done: {len(segments)} segments -> {srt_path} (total {time.time() - _t0:.1f}s)")
     emitter.close()
 
 

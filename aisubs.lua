@@ -7,7 +7,7 @@ Two modes:
   1. Real-time OSD  — transcribes then shows subtitles via OSD
   2. Generate & Load — full SRT is created then loaded synced to playback
 
-Requires: Python 3 + faster-whisper (or openai-whisper)
+Requires: Python 3.12 + WhisperX (word-level aligned subtitles)
 Install:  Run setup.sh (Linux/macOS) or setup.bat (Windows).
 
 https://github.com/voidrlm/vlc-ai-subs
@@ -16,7 +16,7 @@ https://github.com/voidrlm/vlc-ai-subs
 function descriptor()
     return {
         title = "AI Subs Generator",
-        version = "3.2",
+        version = "3.3",
         author = "voidrlm",
         url = "https://github.com/voidrlm/vlc-ai-subs",
         shortdesc = "AI subtitle generator (Whisper)",
@@ -76,11 +76,7 @@ function create_dialog()
 
     dlg:add_label("Engine:", 1, 1, 1, 1)
     engine_dropdown = dlg:add_dropdown(2, 1, 2, 1)
-    engine_dropdown:add_value("Auto (best available)", 0)
-    engine_dropdown:add_value("whisper.cpp (Vulkan)", 1)
-    engine_dropdown:add_value("WhisperX (word-aligned)", 2)
-    engine_dropdown:add_value("faster-whisper (CUDA)", 3)
-    engine_dropdown:add_value("Moonshine (fast preview)", 4)
+    engine_dropdown:add_value("WhisperX (word-aligned)", 0)
 
     dlg:add_label("Model:", 1, 2, 1, 1)
     model_dropdown = dlg:add_dropdown(2, 2, 2, 1)
@@ -128,10 +124,8 @@ function get_task()
 end
 
 function get_engine()
-    local engines = {"", "whisper_cpp", "whisperx", "faster_whisper", "moonshine"}
-    local id = engine_dropdown:get_value()
-    if id and id >= 0 and id <= 4 then return engines[id + 1] end
-    return ""
+    -- WhisperX is the only engine — VSCL_AISUBS_BACKEND is set for clarity
+    return "whisperx"
 end
 
 function get_mode()
@@ -349,7 +343,7 @@ function start_generation()
             return
         end
         -- In VBScript string literals a literal double-quote is written as ""
-        local raw_cmd = string.format('"%s" -u "%s" "%s" "%s" "%s" "%s" "%s"',
+        local raw_cmd = string.format('"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" --debug',
             python, script, media_path, model, language, task, tmp_file)
         local vbs_cmd = raw_cmd:gsub('"', '""')
         vf:write('Set sh = CreateObject("WScript.Shell")\n')
@@ -362,7 +356,7 @@ function start_generation()
         if engine ~= "" then
             env_prefix = "VSCL_AISUBS_BACKEND=" .. engine .. " "
         end
-        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s"',
+        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" --debug',
             env_prefix, python, script, media_path, model, language, task, tmp_file)
     end
 

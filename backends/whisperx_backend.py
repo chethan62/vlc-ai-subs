@@ -13,9 +13,26 @@ from typing import Iterable
 
 from .base import TranscriptionBackend
 
-_RUNNER = os.path.expanduser("~/.local/share/vlc-ai-subs/whisperx_runner.py")
-_VENV = os.path.expanduser("~/.local/share/vlc-ai-subs/venv-whisperx")
-_PYTHON = os.path.join(_VENV, "bin", "python3") if os.path.isdir(_VENV) else os.path.join(_VENV, "bin", "python")
+_BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root or install dir
+_RUNNER = os.path.join(_BASE, "whisperx_runner.py")
+_VENV = os.path.join(_BASE, "venv-whisperx")
+
+# Fallback to the standard install location (~/.local/share/vlc-ai-subs)
+# when running from a clone without a local venv-whisperx.
+if not (os.path.isfile(_RUNNER) and os.path.isdir(_VENV)):
+    _SHARE = os.path.expanduser("~/.local/share/vlc-ai-subs")
+    _RUNNER = os.path.join(_SHARE, "whisperx_runner.py")
+    _VENV = os.path.join(_SHARE, "venv-whisperx")
+
+_PYTHON = None
+for _cand in (
+    os.path.join(_VENV, "bin", "python3"),
+    os.path.join(_VENV, "bin", "python"),
+    os.path.join(_VENV, "Scripts", "python.exe"),  # Windows
+):
+    if os.path.isfile(_cand):
+        _PYTHON = _cand
+        break
 
 
 class WhisperXBackend(TranscriptionBackend):
@@ -27,7 +44,7 @@ class WhisperXBackend(TranscriptionBackend):
     @classmethod
     def detect(cls) -> "WhisperXBackend | None":
         """Return instance if the Python 3.12 venv + runner script exist."""
-        if os.path.isfile(_PYTHON) and os.path.isfile(_RUNNER):
+        if _PYTHON and os.path.isfile(_PYTHON) and os.path.isfile(_RUNNER):
             return cls(align=True)
         return None
 
@@ -41,13 +58,34 @@ class WhisperXBackend(TranscriptionBackend):
         # Run with clean PYTHONPATH — the backends/ directory contains modules
         # (faster_whisper.py, moonshine.py) that shadow pip-installed packages.
         env = {**os.environ, "PYTHONPATH": ""}
+        debug = env.get("VSCL_AISUBS_DEBUG") == "1"
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=1200, env=env,
         )
+        if debug:
+            # Full dump for forensics — survives the subprocess either way.
+            import sys as _sys
+            try:
+                with open("/tmp/aisubs_whisperx.log", "a", encoding="utf-8") as f:
+                    f.write(f"--- run: {media_path} {model_name} ---\n")
+                    f.write("STDOUT:\n" + proc.stdout + "\nSTDERR:\n" + proc.stderr + "\n")
+            except OSError:
+                pass
+            for _l in (proc.stdout + proc.stderr).splitlines():
+                _sys.stderr.write(f"[whisperx] {_l}\n")
+
         if proc.returncode != 0:
+            tail = (
+                "stdout: " + proc.stdout.strip().splitlines()[-1][:300]
+                if proc.stdout.strip() else ""
+            )
             raise RuntimeError(
-                "WhisperX failed (rc={}): {}".format(
-                    proc.returncode, (proc.stderr or "").strip()[:500]
+                "WhisperX failed (rc={}): {}{}{}".format(
+                    proc.returncode,
+                    (proc.stderr or "").strip()[-500:],
+                    "\n" + tail if tail else "",
+                    "\nFull output: /tmp/aisubs_whisperx.log (run with VSCL_AISUBS_DEBUG=1)"
+                    if not debug else "",
                 )
             )
 
@@ -61,6 +99,9 @@ class WhisperXBackend(TranscriptionBackend):
                 yield {"start": obj["start"], "end": obj["end"], "text": obj["text"]}
             elif obj.get("type") == "error":
                 raise RuntimeError(obj.get("msg", "WhisperX error"))
+            elif obj.get("type") == "status" and debug:
+                import sys as _sys
+                _sys.stderr.write(f"[whisperx] {obj.get('msg', '')}\n")
 
     @staticmethod
     def name() -> str:

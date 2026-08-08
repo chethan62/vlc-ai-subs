@@ -4,41 +4,31 @@ VLC media player plugin that generates subtitles using local AI — works offlin
 with any video, any language. Transcribe and translate into clean `.srt` files
 or real-time on-screen captions.
 
-[Upstream](https://github.com/voidrlm/vlc-ai-subs) · [Install](#quick-start) · [Backends](#engines--backends) · [GPU](#gpu-acceleration) · [Env vars](#environment-variables)
+[Upstream](https://github.com/voidrlm/vlc-ai-subs) · [Install](#quick-start) · [Engine](#engine) · [Models](#models) · [Env vars](#environment-variables)
 
 ## Features
 
 | | |
 |---|---|
 | **Zero-config** | "Recommended (auto)" model + Translate to English by default — open a video, click Generate, done |
-| **GPU acceleration** | Vulkan (whisper.cpp), CUDA (faster-whisper), auto-detected — works on NVIDIA, AMD, Intel |
-| **Multi-engine** | 6 backends: whisper.cpp, WhisperX (word-aligned), faster-whisper, sherpa-onnx, Moonshine, openai-whisper |
+| **Word-level alignment** | WhisperX aligns every word to the timeline — perfect subtitle sync for movies |
+| **One engine** | WhisperX (faster-whisper + wav2vec2 alignment) — tuned for movie subtitle generation |
+| **GPU acceleration** | CUDA auto-detected (int8_float16), CPU fallback — works on NVIDIA, AMD, Intel |
 | **Two modes** | Real-time OSD (subtitles appear as they're generated) or Generate & Load SRT |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
 | **VLC 3.x & 4.x** | Works with current and next-gen VLC |
 | **Cross-platform** | Linux, macOS, Windows (native, snap, flatpak) |
-| **Pluggable** | Add a new STT engine by dropping a single Python file in `backends/` |
 
 ## Quick Start
 
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/voidrlm/vlc-ai-subs.git
-cd vlc-ai-subs
-./setup.sh
-```
-
-Or use this fork with GPU acceleration and more engines:
-
-```bash
 git clone https://github.com/chethan62/vlc-ai-subs.git
 cd vlc-ai-subs
-./setup.sh                         # basic faster-whisper install
-./install-whisper-cpp.sh small     # Vulkan GPU acceleration (recommended)
-./install-sherpa-onnx-model.sh small.en  # optional: ONNX Whisper model
+./setup.sh
 ```
 
 ### Windows
@@ -56,90 +46,23 @@ Then:
 3. **View → AI Subs Generator**
 4. Click **Generate**
 
-## Engines / Backends
+## Engine
 
-The plugin auto-picks the best available engine. Priority order:
+This plugin uses a single engine: **WhisperX** (word-level aligned subtitles).
 
-| # | Backend | Runtime | GPU | Quality | Notes |
-|---|---------|---------|-----|---------|-------|
-| 1 | **whisper.cpp** | GGML | Vulkan | ★★★★ | Fastest GPU path; single-binary, no Python deps |
-| 2 | **WhisperX** | faster-whisper | CUDA | ★★★★★ | Word-level alignment for perfect subtitle sync |
-| 3 | **faster-whisper** | CTranslate2 | CUDA | ★★★★ | CUDA with int8_float16 for 4GB cards |
-| 4 | **Moonshine** | ONNX | CPU | ★★☆ | Near-instant, good for quick preview |
-| 5 | **sherpa-onnx** | ONNX Runtime | CPU/CUDA | ★★★ | Whisper + SenseVoice + Paraformer via ONNX |
-| 6 | **openai-whisper** | PyTorch | CPU | ★★★ | Last-resort CPU fallback |
+WhisperX transcribes with faster-whisper (CTranslate2, CUDA or CPU) then
+performs forced word-level alignment with wav2vec2 — the resulting `.srt`
+timestamps line up with individual words, which is what makes it suited to
+movie subtitle generation.
 
-Force a specific backend: `VSCL_AISUBS_BACKEND=whisper_cpp vlc`
+- WhisperX requires Python **< 3.14**, so it runs in its own Python 3.12 venv
+  (`venv-whisperx`), launched as a subprocess with the same JSONL contract.
+- The **"Recommended (auto)"** model is selected from your GPU VRAM
+  (large ≥ 8 GB, medium ≥ 4 GB, small ≥ 2 GB; CPU falls back to RAM-based
+  sizing).
+- To force CPU: `VSCL_AISUBS_DEVICE=cpu vlc`.
 
-## GPU Acceleration
-
-### Vulkan (recommended)
-
-One command:
-
-```bash
-./install-whisper-cpp.sh small
-```
-
-Builds whisper.cpp v1.9.2 with GGML_VULKAN=ON into `~/.local/share/whisper-cpp/`,
-downloads a ggml model, and wires it up. No CUDA toolkit needed — works on
-NVIDIA (GTX 1650+), AMD (RDNA2+), and Intel Arc GPUs.
-
-Model sizes: `tiny` (75 MB) · `base` (140 MB) · **`small` (466 MB, default)** · `medium` (1.5 GB) · `large` (3 GB).
-
-### CUDA
-
-faster-whisper auto-detects a CUDA device and runs with `int8_float16`
-(VRAM-friendly on ≤4GB cards). The backend pre-loads CUDA runtime libs
-via ctypes — no `LD_LIBRARY_PATH` needed.
-
-To force CPU: `VSCL_AISUBS_DEVICE=cpu vlc`.
-
-### sherpa-onnx (ONNX)
-
-```bash
-pip install sherpa-onnx soundfile
-./install-sherpa-onnx-model.sh small.en
-```
-
-Downloads a Whisper ONNX model from [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models). Supports Whisper, SenseVoice, Paraformer, and Qwen3-ASR architectures.
-
-## Environment Variables
-
-| Variable | Values | Default | Applies to |
-|----------|--------|---------|------------|
-| `VSCL_AISUBS_BACKEND` | `whisper_cpp` \| `whisperx` \| `faster_whisper` \| `moonshine` \| `sherpa_onnx` \| `openai_whisper` | auto | All |
-| `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` \| `auto` | auto | faster-whisper, WhisperX |
-| `VSCL_AISUBS_COMPUTE` | `int8_float16` \| `int8_float32` \| `float16` \| `float32`… | auto | faster-whisper, WhisperX |
-| `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | faster-whisper |
-| `VSCL_AISUBS_WORDSUB` | `1` to enable word-level subtitles | off | WhisperX |
-
-## Architecture
-
-```
-aisubs_whisper.py          ← CLI entry-point (parses args, resolves backend)
-├── core/
-│   ├── emitter.py         ← JSONL + Lua poll-mirror output
-│   ├── device.py          ← CUDA lib preload + device/compute detection
-│   └── srt.py             ← SRT timestamp formatting + file writing
-└── backends/
-    ├── base.py            ← TranscriptionBackend ABC
-    ├── whisper_cpp.py     ← whisper.cpp (GGML Vulkan/CPU)
-    ├── whisperx.py        ← WhisperX (word-aligned, CUDA)
-    ├── faster_whisper.py  ← faster-whisper (CTranslate2 CUDA/CPU)
-    ├── moonshine.py       ← Moonshine (ONNX, ultra-fast)
-    ├── sherpa_onnx.py     ← sherpa-onnx (Whisper + SenseVoice + Paraformer)
-    └── openai_whisper.py  ← openai-whisper (PyTorch CPU)
-```
-
-## How It Works
-
-| Mode | Description |
-|------|-------------|
-| **Real-time OSD** | Subtitles appear on screen as the engine transcribes. Great for first-time viewing. |
-| **Generate & Load SRT** | Full transcription runs first, then the `.srt` file is loaded as a proper subtitle track. Perfect sync on replay. |
-
-## Models (faster-whisper / openai-whisper)
+## Models
 
 | Model | Speed | Accuracy | RAM | Download |
 |-------|-------|----------|-----|----------|
@@ -149,64 +72,115 @@ aisubs_whisper.py          ← CLI entry-point (parses args, resolves backend)
 | `medium` | Slow | Great | ~5 GB | ~1.5 GB |
 | `large` | Slowest | Best | ~10 GB | ~3 GB |
 
+Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggingface` by default).
+
+## Environment Variables
+
+| Variable | Values | Default | Applies to |
+|----------|--------|---------|------------|
+| `VSCL_AISUBS_DEVICE` | `cuda` \\| `cpu` | auto | WhisperX |
+| `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32`… | auto | WhisperX |
+| `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX |
+| `VSCL_AISUBS_WORDSUB` | `1` to enable word-level subtitles | off | WhisperX |
+
+## Architecture
+
+```
+aisubs.lua                   VLC extension (dialog + timer polling)
+aisubs_whisper.py            CLI entry-point (args → backend → JSONL → SRT)
+whisperx_runner.py           runs inside the Python 3.12 venv (subprocess)
+core/
+  emitter.py                 JSONL + Lua poll-mirror output
+  device.py                  device detection (CUDA vs CPU)
+  srt.py                     SRT timestamp formatting + file writing
+backends/
+  base.py                    TranscriptionBackend ABC
+  whisperx_backend.py        WhisperX (Python 3.12 subprocess, PYTHONPATH-cleaned)
+```
+
+**JSONL contract (stdout):** `{"type":"status","msg":...}`, `{"type":"sub","i":N,"start":S,"end":E,"text":...}`, `{"type":"done","segments":N,"srt_path":...}`, `{"type":"error","msg":...}`. Lua polls the mirror file (argv[5]) for progress.
+
 ## Testing
 
-Verify everything works after install:
+### Automated tests (dev)
+
+```bash
+cd vlc-ai-subs
+python3 -m venv venv && venv/bin/pip install pytest pygments   # one-time
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 47 tests
+```
+
+Coverage: SRT formatting (float-drift-safe rounding, rollover, clamp),
+JSONL emitter + mirror file, VRAM/RAM model recommendation (boundary cases),
+WhisperX sole-engine resolution (env var ignored, missing-venv error),
+runner CLI errors, and the main CLI's JSONL error contract. No WhisperX
+model download needed — transcription is out of scope for unit tests.
+
+The `PYTHONPATH=` prefix neutralizes any foreign `PYTHONPATH` exported by
+the calling shell (e.g. a desktop-agent terminal), which would otherwise
+shadow packages with an unrelated interpreter's site-packages.
+
+### End-to-end (installed plugin)
 
 ```bash
 # 1. Run the backend directly (bypasses VLC)
-~/.local/share/vlc-ai-subs/venv/bin/python \
+~/.local/share/vlc-ai-subs/venv/bin/python3 \
   ~/.local/share/vlc-ai-subs/aisubs_whisper.py \
   /path/to/video.mp4 recommended auto translate
 
 # 2. Check the .srt file written next to the video
 ls -la /path/to/video.srt
 
-# 3. Verify Vulkan GPU is active
-~/.local/share/whisper-cpp/whisper-cli \
-  -m ~/.local/share/whisper-cpp/ggml-small.bin -f /path/to/video.mp4 -oj -of - 2>&1 | head -3
-# Should show: "using Vulkan0 backend" + "NVIDIA GeForce GTX 1650"
-
-# 4. Compare backends
-VSCL_AISUBS_BACKEND=moonshine ~/.local/share/vlc-ai-subs/venv/bin/python \
-  ~/.local/share/vlc-ai-subs/aisubs_whisper.py video.mp4 recommended auto translate
+# 3. Confirm WhisperX CUDA is active (watch the status lines)
+~/.local/share/vlc-ai-subs/venv-whisperx/bin/python -c "import torch; print(torch.cuda.is_available())"
+# Should print: True
 ```
 
 In VLC: restart → open a video → **View → AI Subs Generator** → click **Generate**.
 
+## Debugging
+
+Add `--debug` to the CLI args (VLC already appends it to every run it
+launches) or set `VSCL_AISUBS_DEBUG=1`. This writes:
+
+| File | Contents |
+|------|----------|
+| `/tmp/aisubs_debug.log` | main CLI phases + timings (args, backend, model pick, segment count, elapsed) |
+| `/tmp/aisubs_whisperx.log` | full subprocess stdout+stderr dump (WhisperX runtime logs) |
+
+Debug lines are also mirrored to stderr, so they appear in VLC's own logs
+(`vlc -vvv`). Failed WhisperX runs additionally include the stderr tail and
+stdout's last JSONL line in the emitted error — no more silent failures.
+
 ## Options
 
+- **Engine** — fixed: WhisperX (word-level aligned).
+- **Model** — `Recommended (auto)` (VRAM-aware) or `tiny` / `base` / `small` / `medium` / `large`.
 - **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, etc.
-- **Task** — `Translate to English` (default) or `Transcribe (same language)`
+- **Task** — `Translate to English` (default) or `Transcribe (same language)`.
+- **Mode** — `Generate & Load SRT` (default) or `Real-time OSD`.
 
 ## Manual Installation
 
 If the setup script doesn't work for your system:
 
-1. Install faster-whisper:
+1. Install WhisperX (Python 3.12 venv):
    ```bash
-   python3 -m venv venv
-   venv/bin/pip install faster-whisper        # Linux/macOS
-   venv\Scripts\pip.exe install faster-whisper # Windows
+   uv venv --python 3.12 venv-whisperx
+   uv pip install --python venv-whisperx/bin/python whisperx
    ```
-
 2. Copy `aisubs.lua` to your VLC extensions folder:
    - **Linux**: `~/.local/share/vlc/lua/extensions/`
    - **macOS**: `~/Library/Application Support/org.videolan.vlc/lua/extensions/`
    - **Windows**: `%APPDATA%\vlc\lua\extensions\`
-
-3. Restart VLC.
+3. Place the Python files (`aisubs_whisper.py`, `whisperx_runner.py`, `core/`, `backends/`) next to `venv-whisperx` (the backend falls back to `~/.local/share/vlc-ai-subs/`).
+4. Restart VLC.
 
 ## Credits
 
-- [voidrlm/vlc-ai-subs](https://github.com/voidrlm/vlc-ai-subs) — original VLC plugin (Lua extension, faster-whisper backend)
-- [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) — GGML Whisper with Vulkan acceleration
+- [voidrlm/vlc-ai-subs](https://github.com/voidrlm/vlc-ai-subs) — original VLC plugin (Lua extension)
 - [m-bain/whisperX](https://github.com/m-bain/whisperX) — word-level forced alignment
 - [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) — CTranslate2 Whisper
-- [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — ONNX runtime STT ecosystem
-- [usefulinc/moonshine](https://github.com/usefulinc/moonshine) — ultra-fast edge STT
-
-Improvements in this fork: Vulkan GPU acceleration, WhisperX word-aligned subtitles, sherpa-onnx engine, Moonshine fast path, CUDA lib auto-preloading, pluggable backend architecture, zero-config "Recommended" mode, English-as-default translate task, idempotent model installers.
 
 ## License
 
