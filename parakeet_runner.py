@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""
+Parakeet runner — invoked by the plugin as a subprocess inside the Python
+3.12 venv (sherpa-onnx). English-only, NVIDIA Parakeet-TDT-0.6B-v2 int8.
+
+Why (2026-08 research): native word-level timestamps (no aligner step),
+WER 6.05% (beats Whisper large-v3 7.44%), ~10x faster, ~0.7GB int8,
+CC-BY-4.0, transducer blanking = no hallucination loops on music.
+
+Contract (stdout, JSONL) — same as whisperx_runner:
+  {"type": "status", "msg": "..."}
+  {"type": "sub", "i": N, "start": S, "end": E, "text": "..."}
+  {"type": "done", "segments": N, "srt_path": "..."}
+  {"type": "error", "msg": "..."}
+
+Args:  <media> <model> <language> <task> [mirror_file] [srt_path]
+The <model> arg is ignored (fixed parakeet-tdt-0.6b-v2). English-only:
+translate or non-"en" language → actionable error, callers fall back.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import wave
+
+MODEL_NAME = "parakeet-tdt-0.6b-v2"
+MODEL_DIR = os.path.expanduser(
+    "~/.local/share/sherpa-onnx/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+)
+
+
+def format_srt_timestamp(seconds: float) -> str:
+    # Total-ms rounding, float-safe (mirror of core/srt.py)
+    total_ms = max(0, round(seconds * 1000))
+    h, rem = divmod(total_ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1_000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def emit(data: dict):
+    print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def decode_to_wav16k(media_path: str) -> str:
+    """Decode arbitrary media to a 16 kHz mono PCM wav via ffmpeg."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found — required by the Parakeet backend")
+    fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="parakeet_")
+    os.close(fd)
+    proc = subprocess.run(
+        [ffmpeg, "-y", "-v", "error", "-i", media_path,
+         "-ac", "1", "-ar", "16000", "-f", "wav", tmp],
+        capture_output=True, text=True, timeout=600,
+    )
+    if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(f"ffmpeg decode failed: {(proc.stderr or '').strip()[:300]}")
+    return tmp
+
+
+def load_float32_16k(wav_path: str) -> "np.ndarray":
+    """Read a 16 kHz mono wav into float32 samples in [-1, 1].
+
+    numpy is imported lazily so the module stays importable in dev venvs
+    that only install pytest (tests cover the pure logic, not the runtime).
+    """
+    import numpy as np
+
+    with wave.open(wav_path, "rb") as w:
+        assert w.getframerate() == 16000 and w.getnchannels() == 1, "expected 16k mono"
+        raw = w.readframes(w.getnframes())
+    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def tokens_to_words(tokens, times) -> list:
+    """Merge sherpa-onnx BPE tokens into words with (text, start, end)."""
+    words = []
+    cur, cur_start, last_t = "", 0.0, 0.0
+    for tok, t in zip(tokens, times):
+        if not cur:
+            cur, cur_start = tok.strip(), t
+        elif tok.startswith(" "):
+            words.append((cur.strip(), cur_start, last_t))
+            cur, cur_start = tok.strip(), t
+        else:
+            cur += tok
+        last_t = max(last_t, t)
+    if cur.strip():
+        words.append((cur.strip(), cur_start, last_t))
+    return words
+
+
+def words_to_segments(words) -> list:
+    """Group words into subtitle cues (sentence punctuation / length caps)."""
+    segments, seg = [], []
+
+    def flush():
+        if not seg:
+            return
+        text = " ".join(w[0] for w in seg).strip()
+        if text:
+            segments.append({"start": seg[0][1], "end": seg[-1][2], "text": text})
+        seg.clear()
+
+    for w in words:
+        seg.append(w)
+        span = w[2] - seg[0][1]
+        if w[0][-1:] in ".!?" or len(seg) >= 12 or span > 9.0:
+            flush()
+    flush()
+    return segments
+
+
+def main():
+    if len(sys.argv) < 5:
+        emit({"type": "error", "msg": "Usage: runner <media> <model> <lang> <task> [mirror] [srt]"})
+        sys.exit(1)
+
+    media_path = sys.argv[1]
+    language = sys.argv[3] if sys.argv[3] != "auto" else None
+    task = sys.argv[4]
+    srt_requested = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6].strip() else None
+
+    if task == "translate":
+        emit({"type": "error", "msg": "Parakeet is English-only (no translation) — use WhisperX for translate."})
+        sys.exit(1)
+    if language and language.lower() != "en":
+        emit({"type": "error", "msg": f"Parakeet supports English only (requested '{language}') — use WhisperX."})
+        sys.exit(1)
+    if not os.path.isfile(media_path):
+        emit({"type": "error", "msg": f"File not found: {media_path}"})
+        sys.exit(1)
+
+    enc, dec, joi, tok = (
+        os.path.join(MODEL_DIR, name)
+        for name in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
+    )
+    if not all(os.path.isfile(p) for p in (enc, dec, joi, tok)):
+        emit({"type": "error", "msg": "Parakeet model not installed — run ./install-parakeet-model.sh"})
+        sys.exit(1)
+
+    import sherpa_onnx  # noqa: E402 — import lazily; heavy package
+
+    t0 = time.time()
+    num_threads = min(8, os.cpu_count() or 2)
+    emit({"type": "status", "msg": f"Parakeet: loading {MODEL_NAME} (CPU, int8, {num_threads} threads)..."})
+    rec = sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=enc, decoder=dec, joiner=joi, tokens=tok,
+        num_threads=num_threads, provider="cpu",
+        model_type="nemo_transducer", modeling_unit="cjkchar",
+    )
+
+    emit({"type": "status", "msg": f"Parakeet: decoding audio (+{time.time()-t0:.0f}s)"})
+    wav_path = decode_to_wav16k(media_path)
+    samples = load_float32_16k(wav_path)
+
+    stream = rec.create_stream()
+    stream.accept_waveform(16000, samples)
+    rec.decode_stream(stream)
+    result = stream.result
+    os.unlink(wav_path)
+
+    tokens = result.tokens or []
+    times = result.timestamps or []
+    if not tokens:
+        emit({"type": "status", "msg": "No speech detected."})
+        emit({"type": "done", "segments": 0, "srt_path": None})
+        return
+
+    words = tokens_to_words(tokens, times)
+    segments = words_to_segments(words)
+
+    srt_lines = []
+    for i, seg in enumerate(segments, 1):
+        emit({"type": "sub", "i": i,
+              "start": round(seg["start"], 3), "end": round(seg["end"], 3),
+              "text": seg["text"]})
+        srt_lines.append(
+            f"{i}\n{format_srt_timestamp(seg['start'])} --> {format_srt_timestamp(seg['end'])}\n{seg['text']}\n"
+        )
+
+    if srt_requested:
+        srt_path = srt_requested
+        os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
+    else:
+        base, _ = os.path.splitext(media_path)
+        srt_path = base + ".srt"
+    try:
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(srt_lines))
+    except OSError as exc:
+        emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
+        sys.exit(1)
+
+    emit({"type": "done", "segments": len(segments), "srt_path": srt_path})
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        import traceback
+        emit({"type": "error", "msg": f"{exc}\n{traceback.format_exc()}"})
+        sys.exit(1)

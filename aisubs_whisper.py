@@ -88,17 +88,20 @@ def _detect_ram_gb() -> int:
 
 
 def _recommend_model(backend_name: str = "whisperx") -> str:
-    """Pick the WhisperX model size based on GPU VRAM (system RAM on CPU).
+    """Pick the model based on GPU VRAM (system RAM on CPU).
 
     WhisperX transcribes via faster-whisper (CTranslate2, int8_float16 on
     CUDA) — roughly 2× the VRAM footprint of GGML models. When a GPU is
     detected, only VRAM tiering applies (never fall through to RAM sizing,
     which could over-recommend for a small GPU).
+
+    Research (2026-08): large-v3-turbo (809M) is WhisperX's accuracy/speed
+    sweet spot — near-large WER at ~4× the speed, ~1.5-1.8GB VRAM int8.
     """
     vram_mb = _detect_vram_mb()
     if vram_mb > 0:
         if vram_mb >= 8000:   return "large"
-        elif vram_mb >= 4000: return "medium"
+        elif vram_mb >= 4000: return "large-v3-turbo"
         elif vram_mb >= 2000: return "small"
         return "base"
 

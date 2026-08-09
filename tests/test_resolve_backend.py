@@ -1,27 +1,56 @@
-"""Tests for backend resolution — WhisperX is the sole engine."""
+"""Tests for backend resolution.
+
+- WhisperX is the DEFAULT engine (VSCL_AISUBS_BACKEND unset or legacy).
+- `VSCL_AISUBS_BACKEND=parakeet` opts into the Parakeet backend (English).
+- Any other value is ignored → WhisperX.
+"""
 
 import pytest
 
 from backends import resolve_backend
 
 
-def test_resolve_returns_whisperx_backend():
+def test_resolve_returns_whisperx_by_default():
     be = resolve_backend()
     assert be is not None
     assert "whisperx" in be.name().lower()
 
 
-def test_env_var_is_ignored(monkeypatch):
-    """VSCL_AISUBS_BACKEND must have no effect — WhisperX only."""
+def test_legacy_env_values_are_ignored(monkeypatch):
+    """whisper_cpp/moonshine/... must fall through to WhisperX."""
     monkeypatch.setenv("VSCL_AISUBS_BACKEND", "whisper_cpp")
     be = resolve_backend()
     assert "whisperx" in be.name().lower()
 
 
+def test_parakeet_env_returns_parakeet_backend(monkeypatch):
+    """The opt-in path; if sherpa-onnx is installed it resolves to Parakeet."""
+    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "parakeet")
+    be = None
+    try:
+        be = resolve_backend()
+    except RuntimeError:
+        pytest.skip("Parakeet backend not installed on this machine")
+    assert be is not None
+    assert "parakeet" in be.name().lower()
+
+
+def test_parakeet_missing_raises_helpful_error(monkeypatch):
+    """VSCL_AISUBS_BACKEND=parakeet without the backend → actionable error."""
+    import backends.parakeet as pk
+
+    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "parakeet")
+    monkeypatch.setattr(pk.ParakeetBackend, "detect", classmethod(lambda cls: None))
+    with pytest.raises(RuntimeError) as exc:
+        resolve_backend()
+    msg = str(exc.value)
+    assert "Parakeet backend is not available" in msg
+    assert "install-parakeet-model.sh" in msg  # points at the fix
+
+
 def test_missing_whisperx_raises_helpful_error(monkeypatch):
     import backends.whisperx_backend as wx
 
-    # Make detect() report "not installed" even though it may be on this box.
     monkeypatch.setattr(wx.WhisperXBackend, "detect", classmethod(lambda cls: None))
     with pytest.raises(RuntimeError) as exc:
         resolve_backend()
@@ -31,10 +60,7 @@ def test_missing_whisperx_raises_helpful_error(monkeypatch):
 
 
 def test_detect_false_when_venv_missing(monkeypatch, tmp_path):
-    """detect() returns None when the 3.12 venv/runner are not installed.
-
-    Patch the module-level paths to a nonexistent location (isolated tmp).
-    """
+    """detect() returns None when the 3.12 venv/runner are not installed."""
     import backends.whisperx_backend as wx
 
     monkeypatch.setattr(wx, "_RUNNER", str(tmp_path / "nope" / "whisperx_runner.py"))
@@ -47,7 +73,6 @@ def test_runner_and_venv_required_for_detect(monkeypatch, tmp_path):
     """detect() must require BOTH the runner script and the venv python."""
     import backends.whisperx_backend as wx
 
-    # venv exists, runner missing
     venv = tmp_path / "venv-whisperx"
     (venv / "bin").mkdir(parents=True)
     py = venv / "bin" / "python3"

@@ -35,7 +35,10 @@ def test_format_srt_timestamp(runner, seconds: float, expected: str):
     assert runner.format_srt_timestamp(seconds) == expected
 
 
-def test_usage_error_emits_error_jsonl(runner, capsys):
+def test_usage_error_emits_error_jsonl(runner, capsys, monkeypatch):
+    # Deterministic argv — the test must not depend on how pytest was invoked
+    # (pytest's own argv can be ≥5 entries, which would skip the usage branch).
+    monkeypatch.setattr(sys, "argv", ["runner"])
     with pytest.raises(SystemExit) as exc:
         runner.main()
     assert exc.value.code == 1

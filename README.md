@@ -12,7 +12,7 @@ or real-time on-screen captions.
 |---|---|
 | **Zero-config** | "Recommended (auto)" model + Translate to English by default — open a video, click Generate, done |
 | **Word-level alignment** | WhisperX aligns every word to the timeline — perfect subtitle sync for movies |
-| **One engine** | WhisperX (faster-whisper + wav2vec2 alignment) — tuned for movie subtitle generation |
+| **Two engines** | WhisperX (multilingual, word-aligned) or Parakeet (English, ~10× faster) |
 | **GPU acceleration** | CUDA auto-detected (int8_float16), CPU fallback — works on NVIDIA, AMD, Intel |
 | **Two modes** | Real-time OSD (subtitles appear as they're generated) or Generate & Load SRT |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
@@ -46,21 +46,27 @@ Then:
 3. **View → AI Subs Generator**
 4. Click **Generate**
 
-## Engine
+## Engines
 
-This plugin uses a single engine: **WhisperX** (word-level aligned subtitles).
+| Engine | Languages | Word timing | Speed (this box) | License |
+|---|---|---|---|---|
+| **WhisperX** (default) | 99 (faster-whisper + wav2vec2 alignment) | wav2vec2 forced alignment | ~2–4× realtime (medium) | BSD-2 + MIT |
+| **Parakeet** (opt-in: `VSCL_AISUBS_BACKEND=parakeet`) | English only | **native TDT word timestamps** (no aligner) | **~10× faster, CPU-friendly** | CC-BY-4.0 |
 
-WhisperX transcribes with faster-whisper (CTranslate2, CUDA or CPU) then
-performs forced word-level alignment with wav2vec2 — the resulting `.srt`
-timestamps line up with individual words, which is what makes it suited to
-movie subtitle generation.
+Pick **Parakeet** in the dialog for English films — WER 6.05% (beats Whisper
+large-v3 7.44% on the Open-ASR leaderboard), ~0.7 GB int8 model, and its
+transducer decoder structurally avoids the hallucination loops Whisper
+hits on music/silence. WhisperX handles non-English and translate.
 
 - WhisperX requires Python **< 3.14**, so it runs in its own Python 3.12 venv
   (`venv-whisperx`), launched as a subprocess with the same JSONL contract.
-- The **"Recommended (auto)"** model is selected from your GPU VRAM
-  (large ≥ 8 GB, medium ≥ 4 GB, small ≥ 2 GB; CPU falls back to RAM-based
-  sizing).
+- The **"Recommended (auto)"** model is picked from GPU VRAM:
+  large ≥ 8 GB, **large-v3-turbo ≥ 4 GB** (the 4 GB sweet spot — near-large
+  accuracy at ~4× the speed), small ≥ 2 GB; CPU falls back to RAM-based sizing.
 - To force CPU: `VSCL_AISUBS_DEVICE=cpu vlc`.
+- Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
+  checks for it up front and aborts with a clear message otherwise (the
+  runner also errors cleanly if ffmpeg is missing at runtime).
 
 ## Models
 
@@ -71,6 +77,7 @@ movie subtitle generation.
 | `small` | Moderate | Better | ~2 GB | ~460 MB |
 | `medium` | Slow | Great | ~5 GB | ~1.5 GB |
 | `large` | Slowest | Best | ~10 GB | ~3 GB |
+| `large-v3-turbo` | Fast | Near-large | ~2 GB | ~1.6 GB |
 
 Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggingface` by default).
 
@@ -88,7 +95,8 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 ```
 aisubs.lua                   VLC extension (dialog + timer polling)
 aisubs_whisper.py            CLI entry-point (args → backend → JSONL → SRT)
-whisperx_runner.py           runs inside the Python 3.12 venv (subprocess)
+whisperx_runner.py           WhisperX inside the Python 3.12 venv (subprocess)
+parakeet_runner.py           Parakeet TDT via sherpa-onnx (same JSONL contract)
 core/
   emitter.py                 JSONL + Lua poll-mirror output
   device.py                  device detection (CUDA vs CPU)
@@ -96,6 +104,7 @@ core/
 backends/
   base.py                    TranscriptionBackend ABC
   whisperx_backend.py        WhisperX (Python 3.12 subprocess, PYTHONPATH-cleaned)
+  parakeet.py                Parakeet (sherpa-onnx, English, CPU)
 ```
 
 **JSONL contract (stdout):** `{"type":"status","msg":...}`, `{"type":"sub","i":N,"start":S,"end":E,"text":...}`, `{"type":"done","segments":N,"srt_path":...}`, `{"type":"error","msg":...}`. Lua polls the mirror file (argv[5]) for progress.
@@ -107,12 +116,12 @@ backends/
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest pygments   # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 47 tests
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 63 tests
 ```
 
 Coverage: SRT formatting (float-drift-safe rounding, rollover, clamp),
 JSONL emitter + mirror file, VRAM/RAM model recommendation (boundary cases),
-WhisperX sole-engine resolution (env var ignored, missing-venv error),
+backend resolution (WhisperX default, Parakeet opt-in, missing-backend errors),
 runner CLI errors, and the main CLI's JSONL error contract. No WhisperX
 model download needed — transcription is out of scope for unit tests.
 
@@ -147,6 +156,7 @@ launches) or set `VSCL_AISUBS_DEBUG=1`. This writes:
 |------|----------|
 | `/tmp/aisubs_debug.log` | main CLI phases + timings (args, backend, model pick, segment count, elapsed) |
 | `/tmp/aisubs_whisperx.log` | full subprocess stdout+stderr dump (WhisperX runtime logs) |
+| `/tmp/aisubs_parakeet.log` | full subprocess stdout+stderr dump (Parakeet runtime logs) |
 
 Debug lines are also mirrored to stderr, so they appear in VLC's own logs
 (`vlc -vvv`). Failed WhisperX runs additionally include the stderr tail and
@@ -154,8 +164,8 @@ stdout's last JSONL line in the emitted error — no more silent failures.
 
 ## Options
 
-- **Engine** — fixed: WhisperX (word-level aligned).
-- **Model** — `Recommended (auto)` (VRAM-aware) or `tiny` / `base` / `small` / `medium` / `large`.
+- **Engine** — WhisperX (multilingual, word-aligned; default) or Parakeet (English, fastest).
+- **Model** — `Recommended (auto)` (VRAM-aware) or `tiny` / `base` / `small` / `medium` / `large` / `large-v3-turbo`.
 - **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, etc.
 - **Task** — `Translate to English` (default) or `Transcribe (same language)`.
 - **Mode** — `Generate & Load SRT` (default) or `Real-time OSD`.

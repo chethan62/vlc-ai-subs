@@ -16,7 +16,7 @@ https://github.com/voidrlm/vlc-ai-subs
 function descriptor()
     return {
         title = "AI Subs Generator",
-        version = "3.3",
+        version = "3.4",
         author = "voidrlm",
         url = "https://github.com/voidrlm/vlc-ai-subs",
         shortdesc = "AI subtitle generator (Whisper)",
@@ -42,6 +42,7 @@ local osd_channel     = nil
 local _poll_tmp      = nil
 local _poll_mode     = nil
 local _poll_model    = nil
+local _poll_engine   = nil
 local _poll_tmr      = nil
 local _poll_secs     = 0
 local _poll_duration = 0
@@ -76,7 +77,8 @@ function create_dialog()
 
     dlg:add_label("Engine:", 1, 1, 1, 1)
     engine_dropdown = dlg:add_dropdown(2, 1, 2, 1)
-    engine_dropdown:add_value("WhisperX (word-aligned)", 0)
+    engine_dropdown:add_value("WhisperX (multilingual, aligned)", 0)
+    engine_dropdown:add_value("Parakeet (English, fastest)", 1)
 
     dlg:add_label("Model:", 1, 2, 1, 1)
     model_dropdown = dlg:add_dropdown(2, 2, 2, 1)
@@ -86,6 +88,7 @@ function create_dialog()
     model_dropdown:add_value("small (accurate)", 3)
     model_dropdown:add_value("medium (very accurate)", 4)
     model_dropdown:add_value("large (best quality)", 5)
+    model_dropdown:add_value("large-v3-turbo (fast + accurate)", 6)
 
     dlg:add_label("Language:", 1, 3, 1, 1)
     lang_input = dlg:add_text_input("auto", 2, 3, 2, 1)
@@ -112,9 +115,9 @@ end
 ----------------------------------------------------------------
 
 function get_model_name()
-    local models = {"recommended", "tiny", "base", "small", "medium", "large"}
+    local models = {"recommended", "tiny", "base", "small", "medium", "large", "large-v3-turbo"}
     local id = model_dropdown:get_value()
-    if id and id >= 0 and id <= 5 then return models[id + 1] end
+    if id and id >= 0 and id <= 6 then return models[id + 1] end
     return "recommended"
 end
 
@@ -124,7 +127,11 @@ function get_task()
 end
 
 function get_engine()
-    -- WhisperX is the only engine — VSCL_AISUBS_BACKEND is set for clarity
+    -- WhisperX default (multilingual); Parakeet opt-in for English speed.
+    -- Maps to VSCL_AISUBS_BACKEND for the Python side.
+    local engines = {"whisperx", "parakeet"}
+    local id = engine_dropdown:get_value()
+    if id and id >= 0 and id <= 1 then return engines[id + 1] end
     return "whisperx"
 end
 
@@ -334,6 +341,10 @@ function start_generation()
     -- Windows: VBScript with bWaitOnReturn=False → wscript exits immediately.
     -- Unix:    trailing & → shell forks Python and exits immediately.
     -- In both cases io.popen returns at once and we poll tmp_file via vlc.timer.
+    local engine = get_engine()
+    -- Parakeet ignores the model dropdown (fixed parakeet-tdt-0.6b-v2);
+    -- show the model that actually runs in the status lines.
+    local shown_model = (engine == "parakeet") and "parakeet-tdt-0.6b-v2" or model
     local cmd
     if is_windows() then
         local vbs_file = string.gsub(tmp_file, "%.txt$", ".vbs")
@@ -347,11 +358,15 @@ function start_generation()
             python, script, media_path, model, language, task, tmp_file)
         local vbs_cmd = raw_cmd:gsub('"', '""')
         vf:write('Set sh = CreateObject("WScript.Shell")\n')
+        if engine ~= "" then
+            -- Windows can't prefix env vars on the command line; set them on
+            -- the child process via WScript.Shell's environment instead.
+            vf:write('sh.Environment("PROCESS")("VSCL_AISUBS_BACKEND") = "' .. engine .. '"\n')
+        end
         vf:write('sh.Run "' .. vbs_cmd .. '", 0, False\n')  -- 0=hidden, False=don't wait
         vf:close()
         cmd = 'wscript.exe /nologo "' .. vbs_file .. '"'
     else
-        local engine = get_engine()
         local env_prefix = ""
         if engine ~= "" then
             env_prefix = "VSCL_AISUBS_BACKEND=" .. engine .. " "
@@ -377,22 +392,27 @@ function start_generation()
     end
 
     -- Poll tmp_file every second; VLC's thread stays free the whole time
-    _poll_tmp   = tmp_file
-    _poll_mode  = mode
-    _poll_model = model
-    _poll_secs  = 0
+    _poll_tmp    = tmp_file
+    _poll_mode   = mode
+    _poll_model  = shown_model
+    _poll_engine = (engine == "parakeet") and "Parakeet" or "WhisperX"
+    _poll_secs   = 0
 
-    -- Estimate total time: rough RTF × audio duration
+    -- Estimate total time: rough RTF × audio duration (engine-dependent).
+    -- Parakeet ≈ 10× realtime on CPU (0.1); WhisperX ≈ 0.3× GPU / 2× CPU.
     local duration = get_media_duration()
     _poll_duration = duration or 0
     if _poll_duration > 0 then
-        -- GPU ≈ 0.3× realtime, CPU ≈ 2× — we use 0.5 as a balanced guess
-        _poll_est_total = _poll_duration * 0.5
+        if engine == "parakeet" then
+            _poll_est_total = _poll_duration * 0.1
+        else
+            _poll_est_total = _poll_duration * 0.5
+        end
     else
         _poll_est_total = 30  -- unknown, guess 30s
     end
 
-    set_status("Transcribing with " .. model .. "... please wait")
+    set_status("Transcribing with " .. _poll_engine .. " (" .. shown_model .. ")... please wait")
     progress_bar:set_value(0)
 
     -- Show debug command so user can run it from terminal if needed
@@ -418,7 +438,7 @@ function poll_progress()
     if not f then
         -- Temp file gone — shouldn't happen; keep waiting
         local eta = math.max(0, _poll_est_total - _poll_secs)
-        set_status(string.format("Transcribing with %s... %ds  ETA ~%ds", _poll_model, _poll_secs, eta))
+        set_status(string.format("Transcribing with %s (%s)... %ds  ETA ~%ds", _poll_engine, _poll_model, _poll_secs, eta))
         _poll_tmr:schedule(POLL_US)
         return
     end
@@ -442,7 +462,7 @@ function poll_progress()
         process_results(_poll_tmp, _poll_mode)
     else
         local eta = math.max(0, _poll_est_total - _poll_secs)
-        set_status(string.format("Transcribing with %s... %ds  ETA ~%ds", _poll_model, _poll_secs, eta))
+        set_status(string.format("Transcribing with %s (%s)... %ds  ETA ~%ds", _poll_engine, _poll_model, _poll_secs, eta))
         _poll_tmr:schedule(POLL_US)
     end
 end
