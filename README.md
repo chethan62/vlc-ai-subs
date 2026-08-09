@@ -109,6 +109,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
 | `VSCL_AISUBS_NLLB_MODEL` | directory path | `~/.local/share/vlc-ai-subs/nllb-200-distilled-1.3B-int8` | translate task |
+| `VSCL_AISUBS_NLLB_FAMILY` | `nllb` \| `m2m100` | `nllb` | cascade model family (m2m100 = MIT) |
 | `VSCL_AISUBS_BLOCKLIST` | `1` \| `0` | `1` | hallucination-phrase filter (research §2.2) |
 
 ## Architecture
@@ -214,4 +215,28 @@ If the setup script doesn't work for your system:
 
 ## License
 
-MIT
+Plugin code: **MIT** (see LICENSE). Models are separate runtime downloads, each
+with its own license — checked per model card:
+
+| Model | License | Use in the plugin |
+|---|---|---|
+| faster-whisper / WhisperX | MIT | default engine (multilingual, word-aligned) |
+| Parakeet-TDT-0.6B-v2 | CC-BY-4.0 (commercial OK) | English ASR engine |
+| NLLB-200 (translate cascade, default) | **CC-BY-NC-4.0** | personal / non-commercial |
+| M2M-100 1.2B (translate cascade, optional) | **MIT** | commercial use |
+
+**Translate license decision**: NLLB-200 is the default cascade model — best
+quality (research: 44.7 BLEU CA→EN) and its CC-BY-NC-4.0 license permits
+personal/non-commercial use, which covers this plugin's typical use. It is
+flagged at install time and skippable (`VSCL_AISUBS_SKIP_NLLB=1`), and
+`VSCL_AISUBS_NLLB=0` reverts to Whisper translate (MIT). For commercial
+deployment, install the MIT-licensed M2M-100 cascade instead:
+
+```bash
+bash install-m2m-model.sh          # sentencepiece + M2M-100 1.2B (~2.5 GB, fp16 weights, int8 compute)
+VSCL_AISUBS_NLLB_FAMILY=m2m100 VSCL_AISUBS_NLLB_MODEL=~/.local/share/vlc-ai-subs/m2m100_1.2B-int8 vlc
+```
+
+M2M-100 covers 100 languages (vs NLLB's 200) at somewhat lower quality — the
+trade for a permissive license. Unmapped languages fall back to Whisper
+translate in either family.

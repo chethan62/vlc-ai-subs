@@ -27,6 +27,25 @@ MODEL_DIR_DEFAULT = os.path.expanduser(
 
 # Target language for the cascade: English.
 TARGET = "eng_Latn"
+# M2M-100 (MIT) family uses ISO-639-1 codes instead of FLORES-200.
+TARGET_M2M = "en"
+
+# M2M-100 supported languages (ISO 639-1, from the model card). Whisper codes
+# absent here are unmapped → fall back to Whisper translate.
+M2M_LANGS = frozenset({
+    "af", "am", "ar", "ast", "az", "ba", "be", "bg", "bn", "br", "bs", "ca",
+    "ceb", "cs", "cy", "da", "de", "el", "en", "es", "et", "fa", "ff", "fi",
+    "fr", "fy", "ga", "gd", "gl", "gu", "ha", "he", "hi", "hr", "ht", "hu",
+    "hy", "id", "ig", "ilo", "is", "it", "ja", "jv", "ka", "kk", "km", "kn",
+    "ko", "lb", "lg", "ln", "lo", "lt", "lv", "mg", "mk", "ml", "mn", "mr",
+    "ms", "my", "ne", "nl", "no", "ns", "oc", "or", "pa", "pl", "ps", "pt",
+    "ro", "ru", "sd", "si", "sk", "sl", "so", "sq", "sr", "ss", "su", "sv",
+    "sw", "ta", "th", "tl", "tn", "tr", "uk", "ur", "uz", "vi", "wo", "xh",
+    "yi", "yo", "zh", "zu",
+})
+
+# Whisper → M2M code corrections (whisper uses different codes for some langs).
+WHISPER_TO_M2M = {"jw": "jv"}
 
 # Whisper language code → NLLB FLORES-200 code. Covers the languages whisper
 # users realistically translate; unmapped codes fall back to Whisper translate.
@@ -64,6 +83,22 @@ def flores_code(whisper_code: str | None) -> str | None:
     if not whisper_code:
         return None
     return WHISPER_TO_FLORES.get(whisper_code.strip().lower())
+
+
+def lang_code(whisper_code: str | None, family: str) -> str | None:
+    """Whisper code → the model family's source code, or None if unsupported.
+
+    family="nllb" → FLORES-200 code (eng_Latn, fra_Latn, …);
+    family="m2m100" → ISO-639-1 code (en, fr, …), with whisper corrections
+    (e.g. whisper "jw" = Javanese → M2M "jv").
+    """
+    if not whisper_code:
+        return None
+    code = whisper_code.strip().lower()
+    if family == "m2m100":
+        code = WHISPER_TO_M2M.get(code, code)
+        return code if code in M2M_LANGS else None
+    return WHISPER_TO_FLORES.get(code)
 
 
 def should_cascade(task: str, env_value: str | None) -> bool:
@@ -116,20 +151,66 @@ class NllbTranslator:
         return self.translate_batch([text], src_lang, tgt_lang)[0]
 
 
+class M2M100Translator:
+    """M2M-100 (MIT) cascade translator — same interface as NllbTranslator.
+
+    Drop-in for the translate pipeline via try_load_translator(family="m2m100").
+    Uses M2M100Tokenizer: source gets the __<src>__ lang token + </s>, and the
+    target prefix is lang_code_to_token[tgt] = "__en__".
+    """
+
+    def __init__(self, model_dir: str, device: str = "cpu", compute_type: str = "int8"):
+        import ctranslate2  # lazy — heavy deps only when translating
+        from transformers import M2M100Tokenizer
+
+        self._ct = ctranslate2.Translator(model_dir, device=device, compute_type=compute_type)
+        self._tok = M2M100Tokenizer.from_pretrained(
+            model_dir, src_lang=TARGET_M2M, tgt_lang=TARGET_M2M
+        )
+
+    def translate_batch(self, texts: list, src_lang: str, tgt_lang: str = TARGET_M2M) -> list:
+        self._tok.src_lang = src_lang
+        self._tok.tgt_lang = tgt_lang
+        sources = [
+            self._tok.convert_ids_to_tokens(
+                self._tok(text, add_special_tokens=True)["input_ids"]
+            )
+            for text in texts
+        ]
+        prefix = [self._tok.lang_code_to_token[tgt_lang]]
+        results = self._ct.translate_batch(
+            sources, target_prefix=[prefix] * len(sources), beam_size=1,
+        )
+        translated = []
+        for r in results:
+            out = r.hypotheses[0][1:]  # strip the __<tgt>__ prefix token
+            translated.append(self._tok.decode(self._tok.convert_tokens_to_ids(out)).strip())
+        return translated
+
+    def translate(self, text: str, src_lang: str, tgt_lang: str = TARGET_M2M) -> str:
+        return self.translate_batch([text], src_lang, tgt_lang)[0]
+
+
 def try_load_translator(
-    model_dir: str | None, device: str = "cpu", compute_type: str = "int8"
-) -> NllbTranslator | None:
+    model_dir: str | None,
+    device: str = "cpu",
+    compute_type: str = "int8",
+    family: str = "nllb",
+) -> NllbTranslator | M2M100Translator | None:
     """Load the translator, or None if the model is missing/broken.
 
-    The caller treats None as 'fall back to Whisper translate' — the
-    translate task must never hard-fail because the NLLB model is absent.
+    family="nllb" (default) → NLLB-200 (CC-BY-NC-4.0); family="m2m100" →
+    M2M-100 (MIT). The caller treats None as 'fall back to Whisper translate'
+    — the translate task must never hard-fail because a model is absent.
     """
     if not model_dir or not os.path.isdir(model_dir):
         return None
     try:
+        if family == "m2m100":
+            return M2M100Translator(model_dir, device=device, compute_type=compute_type)
         return NllbTranslator(model_dir, device=device, compute_type=compute_type)
     except Exception as exc:  # noqa: BLE001 — degrade gracefully
-        logger.warning("NLLB model failed to load (%s) — using Whisper translate", exc)
+        logger.warning("NLLB/M2M model failed to load (%s) — using Whisper translate", exc)
         return None
 
 

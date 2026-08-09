@@ -45,6 +45,31 @@ def test_try_load_translator_missing_dir_returns_none():
     assert nllb.try_load_translator(None) is None
 
 
+def test_m2m_lang_code():
+    assert nllb.lang_code("fr", "m2m100") == "fr"
+    assert nllb.lang_code("en", "m2m100") == "en"
+    assert nllb.lang_code("jw", "m2m100") == "jv"    # whisper → ISO correction
+    assert nllb.lang_code("FR", "m2m100") == "fr"    # case-insensitive
+    assert nllb.lang_code("yue", "m2m100") is None   # Cantonese not in M2M-100
+    assert nllb.lang_code("haw", "m2m100") is None   # Hawaiian not in M2M-100
+    assert nllb.lang_code(None, "m2m100") is None
+
+
+def test_lang_code_family_routing():
+    assert nllb.lang_code("fr", "nllb") == "fra_Latn"
+    assert nllb.lang_code("fr", "m2m100") == "fr"
+    assert nllb.lang_code("zh", "nllb") == "zho_Hans"
+    assert nllb.lang_code("zh", "m2m100") == "zh"
+    assert nllb.lang_code("haw", "nllb") is None
+    assert nllb.lang_code("haw", "m2m100") is None
+
+
+def test_try_load_translator_missing_dir_both_families():
+    assert nllb.try_load_translator("/nonexistent/x", family="nllb") is None
+    assert nllb.try_load_translator("/nonexistent/x", family="m2m100") is None
+    assert nllb.try_load_translator("/nonexistent/x", family="bogus") is None  # → nllb path
+
+
 class _FakeTranslator:
     def __init__(self, fail_on=None):
         self._fail = fail_on

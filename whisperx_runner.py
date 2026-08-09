@@ -17,7 +17,9 @@ files next to the media (realtime-OSD mode, read-only media dirs).
 Env:  VSCL_AISUBS_DEVICE=cpu|cuda forces the device; VSCL_AISUBS_COMPUTE
 overrides the compute type; VSCL_AISUBS_MODEL_CACHE sets the HF cache dir.
 Translate task: NLLB-200 cascade by default (VSCL_AISUBS_NLLB=0 reverts to
-Whisper's built-in translate; VSCL_AISUBS_NLLB_MODEL overrides the model dir).
+Whisper's built-in translate; VSCL_AISUBS_NLLB_MODEL overrides the model dir;
+VSCL_AISUBS_NLLB_FAMILY=nllb|m2m100 picks the cascade family — m2m100 is the
+MIT-licensed commercial-use alternative).
 """
 import json
 import os
@@ -154,19 +156,25 @@ def main():
     device = resolve_device(cuda_available)
     compute = resolve_compute(device)
 
-    # Load the NLLB translator up front so a missing/broken model switches to
-    # Whisper translate before any audio is transcribed.
+    # Load the NLLB/M2M translator up front so a missing/broken model switches
+    # to Whisper translate before any audio is transcribed. Family: nllb
+    # (CC-BY-NC-4.0, default) or m2m100 (MIT, commercial-use alternative).
+    family = os.environ.get("VSCL_AISUBS_NLLB_FAMILY", "nllb").strip().lower()
+    if family not in ("nllb", "m2m100"):
+        emit({"type": "status", "msg": f"Unknown VSCL_AISUBS_NLLB_FAMILY '{family}' — using nllb (CC-BY-NC-4.0)"})
+        family = "nllb"
     translator = None
     if use_nllb:
         translator = nllb_translate.try_load_translator(
             os.environ.get("VSCL_AISUBS_NLLB_MODEL") or nllb_translate.MODEL_DIR_DEFAULT,
             device="cuda" if device == "cuda" else "cpu",
             compute_type="int8_float16" if device == "cuda" else "int8",
+            family=family,
         )
         if translator:
-            emit({"type": "status", "msg": "Translate: NLLB cascade (transcribe → NLLB-200 → English)"})
+            emit({"type": "status", "msg": f"Translate: {family} cascade (transcribe → {family} → English)"})
         else:
-            emit({"type": "status", "msg": "NLLB model not installed — using Whisper translate. Run ./install-nllb-model.sh"})
+            emit({"type": "status", "msg": "NLLB/M2M model not installed — using Whisper translate. Run ./install-nllb-model.sh (or install-m2m-model.sh)"})
 
     emit({"type": "status", "msg": f"WhisperX: loading {model_name} on {device} ({compute})..."})
 
@@ -193,17 +201,18 @@ def main():
     from core.blocklist import filter_segments
     result["segments"] = filter_segments(result.get("segments", []))
 
-    # 2b. Cascade translation (translate task only, NLLB loaded)
+    # 2b. Cascade translation (translate task only, translator loaded)
     if translator and task == "translate":
+        tgt_lang = nllb_translate.TARGET_M2M if family == "m2m100" else nllb_translate.TARGET
         src_code = (result.get("language") or language or "en").lower()
-        src_flores = nllb_translate.flores_code(src_code)
+        src_flores = nllb_translate.lang_code(src_code, family)
         if not src_flores:
             # Unmapped language — re-transcribe with Whisper's translate so
             # output stays English (never silently source-language).
-            emit({"type": "status", "msg": f"NLLB: no mapping for '{src_code}' — re-running with Whisper translate"})
+            emit({"type": "status", "msg": f"{family}: no mapping for '{src_code}' — re-running with Whisper translate"})
             result = model.transcribe(media_path, language=language, task="translate")
-        elif src_flores != nllb_translate.TARGET:
-            emit({"type": "status", "msg": f"NLLB: translating {src_flores} → {nllb_translate.TARGET} (+{time.time() - _t0:.0f}s)"})
+        elif src_flores != tgt_lang:
+            emit({"type": "status", "msg": f"{family}: translating {src_flores} → {tgt_lang} (+{time.time() - _t0:.0f}s)"})
             before = [(s.get("text") or "").strip() for s in result.get("segments", [])]
             result["segments"] = nllb_translate.translate_segments(
                 result.get("segments", []), src_flores, translator
@@ -211,9 +220,9 @@ def main():
             after = [(s.get("text") or "").strip() for s in result["segments"]]
             if not nllb_translate.translation_viable(before, after):
                 # Nothing came back translatable — fall back to Whisper.
-                emit({"type": "status", "msg": "NLLB translation failed — re-running with Whisper translate"})
+                emit({"type": "status", "msg": f"{family} translation failed — re-running with Whisper translate"})
                 result = model.transcribe(media_path, language=language, task="translate")
-        # src_flores == eng_Latn: source is already English — pass through
+        # src == tgt: source is already English — pass through
 
     # Re-apply the blocklist: the fallback branches produced fresh unfiltered
     # segments, and NLLB-translated output may itself match an English phrase.
