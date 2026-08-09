@@ -10,14 +10,34 @@ import pytest
 from backends import resolve_backend
 
 
-def test_resolve_returns_whisperx_by_default():
+def _fake_whisperx_backend(monkeypatch, tmp_path):
+    """Point the whisperx backend at fake-but-existing files so the resolution
+    tests are hermetic (they must pass on a fresh machine with no runtime dir,
+    e.g. CI)."""
+    import backends.whisperx_backend as wx
+
+    runner = tmp_path / "whisperx_runner.py"
+    runner.write_text("")
+    venv = tmp_path / "venv-whisperx"
+    (venv / "bin").mkdir(parents=True)
+    py = venv / "bin" / "python3"
+    py.write_text("")
+    monkeypatch.setattr(wx, "_RUNNER", str(runner))
+    monkeypatch.setattr(wx, "_VENV", str(venv))
+    monkeypatch.setattr(wx, "_PYTHON", str(py))
+    return wx
+
+
+def test_resolve_returns_whisperx_by_default(monkeypatch, tmp_path):
+    _fake_whisperx_backend(monkeypatch, tmp_path)
     be = resolve_backend()
     assert be is not None
     assert "whisperx" in be.name().lower()
 
 
-def test_legacy_env_values_are_ignored(monkeypatch):
+def test_legacy_env_values_are_ignored(monkeypatch, tmp_path):
     """whisper_cpp/moonshine/... must fall through to WhisperX."""
+    _fake_whisperx_backend(monkeypatch, tmp_path)
     monkeypatch.setenv("VSCL_AISUBS_BACKEND", "whisper_cpp")
     be = resolve_backend()
     assert "whisperx" in be.name().lower()
