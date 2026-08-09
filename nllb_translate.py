@@ -84,22 +84,22 @@ class NllbTranslator:
         self._tok = AutoTokenizer.from_pretrained(model_dir, src_lang=TARGET)
 
     def translate(self, text: str, src_lang: str, tgt_lang: str = TARGET) -> str:
+        # Official ctranslate2 NLLB pattern (docs → Transformers → NLLB):
+        # tokenize WITH special tokens (the tokenizer adds the source-lang
+        # token and </s>; ctranslate2 does not add them itself), pass the
+        # target-lang code WITHOUT "__" delimiters as target_prefix, and
+        # strip the first output token — it is the target-lang prefix.
         self._tok.src_lang = src_lang
-        ids = self._tok(text, add_special_tokens=True)["input_ids"]
-        tokens = self._tok.convert_ids_to_tokens(ids)
-        # Keep the leading __src_lang__ token; drop the trailing EOS
-        # (ctranslate2 adds its own).
-        if tokens and tokens[-1] == "</s>":
-            tokens = tokens[:-1]
+        tokens = self._tok.convert_ids_to_tokens(
+            self._tok(text, add_special_tokens=True)["input_ids"]
+        )
         result = self._ct.translate_batch(
             [tokens],
-            target_prefix=[["__" + tgt_lang + "__"]],
+            target_prefix=[[tgt_lang]],
             beam_size=1,
         )
-        out = result[0].tokens
-        if out and out[0] == "__" + tgt_lang + "__":
-            out = out[1:]
-        return self._tok.convert_tokens_to_string(out).strip()
+        out = result[0].hypotheses[0][1:]  # ctranslate2 ≥4: per-hypothesis list
+        return self._tok.decode(self._tok.convert_tokens_to_ids(out)).strip()
 
 
 def try_load_translator(
