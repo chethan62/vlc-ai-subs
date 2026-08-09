@@ -28,8 +28,12 @@ or real-time on-screen captions.
 ```bash
 git clone https://github.com/chethan62/vlc-ai-subs.git
 cd vlc-ai-subs
-./setup.sh
+./install.sh
 ```
+
+`install.sh` is the full installer (WhisperX + Parakeet model + ffmpeg
+check + VLC extension sync). `setup.sh` is the minimal WhisperX-only
+variant (no Parakeet, no ffmpeg check).
 
 ### Windows
 
@@ -107,7 +111,6 @@ whisperx_runner.py           WhisperX inside the Python 3.12 venv (subprocess)
 parakeet_runner.py           Parakeet TDT via sherpa-onnx (same JSONL contract)
 core/
   emitter.py                 JSONL + Lua poll-mirror output
-  device.py                  device detection (CUDA vs CPU)
   srt.py                     SRT timestamp formatting + file writing
 backends/
   base.py                    TranscriptionBackend ABC

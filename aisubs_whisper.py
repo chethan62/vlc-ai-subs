@@ -7,16 +7,11 @@ Architecture
   aisubs_whisper.py        CLI entry-point (you are here)
   core/
     emitter.py             JSONL output + file mirror for Lua polling
-    device.py              CUDA lib preloading + device/compute detection
     srt.py                 SRT timestamp formatting and file writing
   backends/
     base.py                Abstract TranscriptionBackend
-    whisper_cpp.py         whisper.cpp (Vulkan/CPU) — preferred
-    whisperx_backend.py    WhisperX (word-aligned, Python 3.12 subprocess)
-    faster_whisper.py      faster-whisper (CUDA/CPU) — fallback
-    moonshine.py           Moonshine (CPU, ultra-fast)
-    sherpa_onnx.py         sherpa-onnx (ONNX runtime)
-    openai_whisper.py      openai-whisper (CPU) — last resort
+    whisperx_backend.py    WhisperX (word-aligned, Python 3.12 subprocess) — default
+    parakeet.py            Parakeet TDT via sherpa-onnx (English, CPU, ~10x faster)
 
 Usage
 ─────

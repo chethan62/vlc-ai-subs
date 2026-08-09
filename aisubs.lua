@@ -49,6 +49,10 @@ local _poll_duration = 0
 local _poll_est_total = 30
 local POLL_US     = 1000000  -- poll every 1 second (was 3s)
 
+-- Seed the temp-name RNG once at load — predictable /tmp names are a
+-- symlink-attack vector (see get_temp_file).
+math.randomseed(os.time() * 1000 + (os.clock() * 1000) % 1000)
+
 ----------------------------------------------------------------
 -- Lifecycle
 ----------------------------------------------------------------
@@ -197,14 +201,23 @@ function get_home()
 end
 
 function get_temp_file()
-    local tmp
+    -- Random component: /tmp/aisubs_<time>_<rand>.txt — a predictable name
+    -- lets a local attacker pre-plant a symlink that our open() would follow.
+    local unique = tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999))
     if is_windows() then
-        tmp = os.getenv("TEMP") or os.getenv("TMP") or (get_home() .. "\\AppData\\Local\\Temp")
-        return tmp .. "\\aisubs_" .. os.time() .. ".txt"
+        local tmp = os.getenv("TEMP") or os.getenv("TMP") or (get_home() .. "\\AppData\\Local\\Temp")
+        return tmp .. "\\aisubs_" .. unique .. ".txt"
     else
-        tmp = os.getenv("TMPDIR") or "/tmp"
-        return tmp .. "/aisubs_" .. os.time() .. ".txt"
+        local tmp = os.getenv("TMPDIR") or "/tmp"
+        return tmp .. "/aisubs_" .. unique .. ".txt"
     end
+end
+
+-- POSIX sh single-quote escaping. Every interpolated value lands inside a
+-- shell command (os.execute → /bin/sh -c); double quotes alone are NOT
+-- sufficient — $(...) and backticks execute even inside them.
+local function shq(s)
+    return "'" .. string.gsub(s or "", "'", "'\\''") .. "'"
 end
 
 function get_media_duration()
@@ -324,12 +337,24 @@ function start_generation()
     local python    = find_python(script_dir)
     local model     = get_model_name()
     local language  = lang_input:get_text() or "auto"
+    -- Whitelist language codes: this free-text field lands inside a shell
+    -- command below, so reject anything that is not a lang tag (en, zh-CN…).
+    if language ~= "auto" and not string.match(language, "^[a-zA-Z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*$") then
+        set_status("Error: invalid language code: " .. language)
+        return
+    end
     local task      = get_task()
     local mode      = get_mode()
     local tmp_file  = get_temp_file()
 
-    -- Write sentinel so we can detect if Python started writing
-    local test_f = io.open(tmp_file, "w")
+    -- Write sentinel so we can detect if Python started writing.
+    -- Prefer exclusive create ("wx" fails on a pre-planted symlink instead of
+    -- following it); older Lua builds fall back to "w" — the random temp name
+    -- already blocks the symlink race regardless.
+    local ok, test_f = pcall(io.open, tmp_file, "wx")
+    if not ok or not test_f then
+        test_f = io.open(tmp_file, "w")
+    end
     if not test_f then
         set_status("Error: cannot write to temp dir: " .. tmp_file)
         return
@@ -363,7 +388,7 @@ function start_generation()
         -- In VBScript string literals a literal double-quote is written as ""
         local raw_cmd = string.format('"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" "%s" --debug',
             python, script, media_path, model, language, task, tmp_file, srt_arg)
-        local vbs_cmd = raw_cmd:gsub('"', '""')
+        local vbs_cmd = raw_cmd:gsub('"', '""'):gsub("[\r\n]", "")  -- + strip line breaks (VBS line injection)
         vf:write('Set sh = CreateObject("WScript.Shell")\n')
         if engine ~= "" then
             -- Windows can't prefix env vars on the command line; set them on
@@ -378,8 +403,9 @@ function start_generation()
         if engine ~= "" then
             env_prefix = "VSCL_AISUBS_BACKEND=" .. engine .. " "
         end
-        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" "%s" --debug',
-            env_prefix, python, script, media_path, model, language, task, tmp_file, srt_arg)
+        cmd = string.format('%s%s -u %s %s %s %s %s %s %s --debug',
+            env_prefix, shq(python), shq(script), shq(media_path), shq(model),
+            shq(language), shq(task), shq(tmp_file), shq(srt_arg))
     end
 
     vlc.msg.info("[AI Subs] python: " .. python)

@@ -55,8 +55,9 @@ class WhisperXBackend(TranscriptionBackend):
             _PYTHON, "-u", _RUNNER,
             media_path, model_name, language or "auto", task,
         ]
-        # Run with clean PYTHONPATH — the backends/ directory contains modules
-        # (faster_whisper.py, moonshine.py) that shadow pip-installed packages.
+        # Run with clean PYTHONPATH — a stray local module (or a foreign
+        # PYTHONPATH export in the user's shell) must never shadow the
+        # pip-installed packages inside venv-whisperx.
         env = {**os.environ, "PYTHONPATH": ""}
         debug = env.get("VSCL_AISUBS_DEBUG") == "1"
         proc = subprocess.run(

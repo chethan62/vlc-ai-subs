@@ -6,6 +6,7 @@ sherpa-onnx, which the runner only loads inside main() after validation.
 """
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -136,6 +137,17 @@ def test_write_srt_if_requested_skips_empty(runner, tmp_path):
     srt = tmp_path / "out.srt"
     assert runner.write_srt_if_requested([], str(srt)) is None
     assert not srt.exists()  # no 0-byte SRTs
+
+
+def test_write_srt_if_requested_refuses_symlink(runner, tmp_path):
+    target = tmp_path / "victim.txt"
+    target.write_text("do not clobber")
+    link = tmp_path / "out.srt"
+    link.symlink_to(target)
+    path = runner.write_srt_if_requested(["1\nline\n"], str(link))
+    assert path is not None and path != str(link)
+    assert target.read_text() == "do not clobber"  # symlink target untouched
+    assert os.path.isfile(path)
 
 
 # ── long-media chunking ───────────────────────────────────────────────

@@ -98,6 +98,12 @@ def write_srt_if_requested(srt_lines: list, srt_requested: str | None) -> str | 
     if not srt_requested or not srt_lines:
         return None
     srt_path = srt_requested
+    if os.path.islink(srt_path):
+        # Never write through a symlink (temp-name swap attack) — fall back
+        # to a fresh unique path instead. Regular files still overwrite.
+        import tempfile
+        fd, srt_path = tempfile.mkstemp(prefix="aisubs_", suffix=".srt")
+        os.close(fd)
     os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
     with open(srt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(srt_lines))

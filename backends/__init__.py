@@ -40,7 +40,7 @@ def resolve_backend() -> "TranscriptionBackend":
             f"&& uv pip install --python ~/.local/share/vlc-ai-subs/venv-whisperx/bin/python sherpa-onnx"
         )
 
-    # Default + any legacy value (whisper_cpp, moonshine, ...) → WhisperX
+    # Default + any legacy/unknown env value → WhisperX
     from backends.whisperx_backend import WhisperXBackend
 
     try:
