@@ -136,7 +136,7 @@ backends/
 
 ```bash
 cd vlc-ai-subs
-python3 -m venv venv && venv/bin/pip install pytest pygments   # one-time
+python3 -m venv venv && venv/bin/pip install pytest              # one-time
 PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 98 tests (model-free)
 ```
 
