@@ -11,10 +11,67 @@ Contract (stdout, JSONL):
   {"type": "error", "msg": "..."}
 
 Args:  <media> <model> <language> <task> [mirror_file] [srt_path]
+The SRT file is written ONLY when [srt_path] is given — the plugin's caller
+(aisubs_whisper.py) owns SRT output, so the runner never creates side-effect
+files next to the media (realtime-OSD mode, read-only media dirs).
+Env:  VSCL_AISUBS_DEVICE=cpu|cuda forces the device; VSCL_AISUBS_COMPUTE
+overrides the compute type; VSCL_AISUBS_MODEL_CACHE sets the HF cache dir.
 """
 import json
 import os
 import sys
+
+
+_CUDA_COMPUTE = ("int8", "int8_float16", "int8_float32", "float16", "float32")
+_CPU_COMPUTE = ("int8", "int8_float32", "float32")
+
+
+def resolve_device(cuda_available: bool) -> str:
+    """Device selection: VSCL_AISUBS_DEVICE=cpu|cuda forces it; else auto."""
+    env_device = os.environ.get("VSCL_AISUBS_DEVICE", "").strip().lower()
+    if env_device == "cpu":
+        return "cpu"
+    if env_device == "cuda":
+        return "cuda"
+    return "cuda" if cuda_available else "cpu"
+
+
+def resolve_compute(device: str) -> str:
+    """Compute type: VSCL_AISUBS_COMPUTE overrides; sensible default per device.
+
+    Validated per device — int8_float16/float16 are CUDA-only and would
+    crash inside faster-whisper on CPU.
+    """
+    env_ct = os.environ.get("VSCL_AISUBS_COMPUTE", "").strip().lower()
+    allowed = _CUDA_COMPUTE if device == "cuda" else _CPU_COMPUTE
+    if env_ct in allowed:
+        return env_ct
+    return "int8_float16" if device == "cuda" else "float32"
+
+
+def model_cache_dir() -> str | None:
+    """VSCL_AISUBS_MODEL_CACHE → HF download_root (None = default cache)."""
+    cache = os.environ.get("VSCL_AISUBS_MODEL_CACHE", "").strip()
+    return cache or None
+
+
+def hardened_asr_options() -> dict:
+    """Research-backed decode options (see .research/final_report.md §2.2).
+
+    WhisperX's defaults are beam_size=5 with temperature fallback ladder and
+    no hallucination gate — fine for clean audio, but movie soundtracks get
+    silence/music hallucinations. BoH mitigation: beam 1, fixed low
+    temperature, no cross-window conditioning, explicit silence thresholds.
+    """
+    return {
+        "beam_size": 1,
+        "condition_on_previous_text": False,
+        "temperatures": [0.0],
+        "hallucination_silence_threshold": 2.0,
+        "compression_ratio_threshold": 2.4,
+        "log_prob_threshold": -1.0,
+        "no_speech_threshold": 0.6,
+    }
 
 
 def format_srt_timestamp(seconds: float) -> str:
@@ -28,6 +85,23 @@ def format_srt_timestamp(seconds: float) -> str:
 
 def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def write_srt_if_requested(srt_lines: list, srt_requested: str | None) -> str | None:
+    """Write the SRT only when an explicit path was requested; else None.
+
+    The plugin caller always writes the SRT itself — the runner must not
+    create <media>.srt side effects (realtime-OSD mode, read-only dirs).
+    Empty output is skipped (no 0-byte SRTs). Raises OSError on write
+    failure so main() can emit a clean JSONL error.
+    """
+    if not srt_requested or not srt_lines:
+        return None
+    srt_path = srt_requested
+    os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(srt_lines))
+    return srt_path
 
 
 def main():
@@ -50,21 +124,24 @@ def main():
 
     import whisperx
 
-    # Resolve device
-    device = "cuda"
+    # Resolve device: VSCL_AISUBS_DEVICE=cpu|cuda forces it; else auto-detect.
     try:
         import torch
-        if not torch.cuda.is_available():
-            device = "cpu"
+        cuda_available = torch.cuda.is_available()
     except Exception:
-        device = "cpu"
-
-    compute = "int8_float16" if device == "cuda" else "float32"
+        cuda_available = False
+    device = resolve_device(cuda_available)
+    compute = resolve_compute(device)
 
     emit({"type": "status", "msg": f"WhisperX: loading {model_name} on {device} ({compute})..."})
 
-    # 1. Transcribe
-    model = whisperx.load_model(model_name, device, compute_type=compute)
+    # 1. Transcribe — VAD-first (whisperx default gate) + hardened decode.
+    model = whisperx.load_model(
+        model_name, device, compute_type=compute,
+        asr_options=hardened_asr_options(),
+        vad_options={"vad_onset": 0.500, "vad_offset": 0.363},
+        download_root=model_cache_dir(),
+    )
     result = model.transcribe(
         media_path,
         language=language,
@@ -114,17 +191,10 @@ def main():
             f"{text}\n"
         )
 
-    # 4. Write SRT
-    if srt_requested:
-        srt_path = srt_requested
-        os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
-    else:
-        base, _ = os.path.splitext(media_path)
-        srt_path = base + ".srt"
-
+    # 4. Write SRT — only when the caller explicitly requested a path (the
+    # plugin caller owns SRT output; no <media>.srt side effects).
     try:
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(srt_lines))
+        srt_path = write_srt_if_requested(srt_lines, srt_requested)
     except OSError as exc:
         emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
         sys.exit(1)

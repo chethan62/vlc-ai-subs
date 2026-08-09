@@ -16,6 +16,9 @@ Contract (stdout, JSONL) — same as whisperx_runner:
 Args:  <media> <model> <language> <task> [mirror_file] [srt_path]
 The <model> arg is ignored (fixed parakeet-tdt-0.6b-v2). English-only:
 translate or non-"en" language → actionable error, callers fall back.
+The SRT file is written ONLY when [srt_path] is given — the plugin's caller
+(aisubs_whisper.py) owns SRT output, so the runner never creates side-effect
+files next to the media (realtime-OSD mode, read-only media dirs).
 """
 import json
 import os
@@ -43,6 +46,23 @@ def format_srt_timestamp(seconds: float) -> str:
 
 def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def write_srt_if_requested(srt_lines: list, srt_requested: str | None) -> str | None:
+    """Write the SRT only when an explicit path was requested; else None.
+
+    The plugin caller always writes the SRT itself — the runner must not
+    create <media>.srt side effects (realtime-OSD mode, read-only dirs).
+    Empty output is skipped (no 0-byte SRTs). Raises OSError on write
+    failure so main() can emit a clean JSONL error.
+    """
+    if not srt_requested or not srt_lines:
+        return None
+    srt_path = srt_requested
+    os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(srt_lines))
+    return srt_path
 
 
 def decode_to_wav16k(media_path: str) -> str:
@@ -119,6 +139,25 @@ def words_to_segments(words) -> list:
     return segments
 
 
+SAMPLE_RATE = 16000
+# 20 min — the 0.6B TDT model is designed for up to 24-min single-pass
+# segments; long media is decoded in chunks instead of one giant stream.
+CHUNK_SECONDS = 20 * 60
+
+
+def chunk_plan(n_samples: int, chunk_samples: int) -> list:
+    """[(start, stop)] sample ranges covering n_samples in ≤chunk_samples pieces."""
+    return [
+        (start, min(start + chunk_samples, n_samples))
+        for start in range(0, n_samples, chunk_samples)
+    ]
+
+
+def shift_words(words: list, dt: float) -> list:
+    """Offset (text, start, end) words by dt seconds (chunk time alignment)."""
+    return [(w[0], w[1] + dt, w[2] + dt) for w in words]
+
+
 def main():
     if len(sys.argv) < 5:
         emit({"type": "error", "msg": "Usage: runner <media> <model> <lang> <task> [mirror] [srt]"})
@@ -161,21 +200,30 @@ def main():
     emit({"type": "status", "msg": f"Parakeet: decoding audio (+{time.time()-t0:.0f}s)"})
     wav_path = decode_to_wav16k(media_path)
     samples = load_float32_16k(wav_path)
-
-    stream = rec.create_stream()
-    stream.accept_waveform(16000, samples)
-    rec.decode_stream(stream)
-    result = stream.result
     os.unlink(wav_path)
 
-    tokens = result.tokens or []
-    times = result.timestamps or []
-    if not tokens:
+    # Long media: decode in ≤20-min chunks (the 0.6B TDT model is designed
+    # for up to 24-min single-pass segments) instead of one giant stream.
+    ranges = chunk_plan(len(samples), CHUNK_SECONDS * SAMPLE_RATE)
+    words = []
+    n_chunks = len(ranges)
+    for ci, (start, stop) in enumerate(ranges, 1):
+        if n_chunks > 1:
+            emit({"type": "status", "msg": f"Parakeet: decoding chunk {ci}/{n_chunks} (+{time.time()-t0:.0f}s)"})
+        stream = rec.create_stream()
+        stream.accept_waveform(SAMPLE_RATE, samples[start:stop])
+        rec.decode_stream(stream)
+        result = stream.result
+        tokens = result.tokens or []
+        times = result.timestamps or []
+        if tokens:
+            words.extend(shift_words(tokens_to_words(tokens, times), start / SAMPLE_RATE))
+
+    if not words:
         emit({"type": "status", "msg": "No speech detected."})
         emit({"type": "done", "segments": 0, "srt_path": None})
         return
 
-    words = tokens_to_words(tokens, times)
     segments = words_to_segments(words)
 
     srt_lines = []
@@ -187,15 +235,10 @@ def main():
             f"{i}\n{format_srt_timestamp(seg['start'])} --> {format_srt_timestamp(seg['end'])}\n{seg['text']}\n"
         )
 
-    if srt_requested:
-        srt_path = srt_requested
-        os.makedirs(os.path.dirname(srt_path) or ".", exist_ok=True)
-    else:
-        base, _ = os.path.splitext(media_path)
-        srt_path = base + ".srt"
+    # Write SRT — only when the caller explicitly requested a path (the
+    # plugin caller owns SRT output; no <media>.srt side effects).
     try:
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(srt_lines))
+        srt_path = write_srt_if_requested(srt_lines, srt_requested)
     except OSError as exc:
         emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
         sys.exit(1)

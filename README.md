@@ -11,7 +11,7 @@ or real-time on-screen captions.
 | | |
 |---|---|
 | **Zero-config** | "Recommended (auto)" model + Translate to English by default — open a video, click Generate, done |
-| **Word-level alignment** | WhisperX aligns every word to the timeline — perfect subtitle sync for movies |
+| **Word-level timing** | WhisperX wav2vec2 alignment on CUDA, or Parakeet's native TDT word timestamps (CPU too) |
 | **Two engines** | WhisperX (multilingual, word-aligned) or Parakeet (English, ~10× faster) |
 | **GPU acceleration** | CUDA auto-detected (int8_float16), CPU fallback — works on NVIDIA, AMD, Intel |
 | **Two modes** | Real-time OSD (subtitles appear as they're generated) or Generate & Load SRT |
@@ -64,9 +64,17 @@ hits on music/silence. WhisperX handles non-English and translate.
   large ≥ 8 GB, **large-v3-turbo ≥ 4 GB** (the 4 GB sweet spot — near-large
   accuracy at ~4× the speed), small ≥ 2 GB; CPU falls back to RAM-based sizing.
 - To force CPU: `VSCL_AISUBS_DEVICE=cpu vlc`.
+- WhisperX's wav2vec2 word alignment runs on **CUDA only**; on CPU the
+  segments keep faster-whisper's timestamps (no alignment pass). Parakeet's
+  native TDT word timestamps work on CPU as well.
+- WhisperX decode is hardened for movies (beam 1, no cross-window
+  conditioning, silence/hallucination gates) — research-backed, see
+  `.research/final_report.md` §2.2.
 - Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
   checks for it up front and aborts with a clear message otherwise (the
   runner also errors cleanly if ffmpeg is missing at runtime).
+- Long media is decoded in ≤20-min chunks — the 0.6B TDT model's
+  single-pass design limit is ~24 min (`.research/final_report.md` §2.1).
 
 ## Models
 
@@ -85,10 +93,10 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 
 | Variable | Values | Default | Applies to |
 |----------|--------|---------|------------|
-| `VSCL_AISUBS_DEVICE` | `cuda` \\| `cpu` | auto | WhisperX |
-| `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32`… | auto | WhisperX |
-| `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX |
-| `VSCL_AISUBS_WORDSUB` | `1` to enable word-level subtitles | off | WhisperX |
+| `VSCL_AISUBS_BACKEND` | `whisperx` \\| `parakeet` | `whisperx` | backend selection |
+| `VSCL_AISUBS_DEVICE` | `cuda` \\| `cpu` | auto | WhisperX (runner) |
+| `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
+| `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 
 ## Architecture
 

@@ -114,3 +114,43 @@ def test_missing_model_emits_install_hint(runner, capsys, monkeypatch, tmp_path)
         runner.main()
     assert exc.value.code == 1
     assert "install-parakeet-model.sh" in capsys.readouterr().out
+
+
+# ── write_srt_if_requested ────────────────────────────────────────────
+
+def test_write_srt_if_requested_writes(runner, tmp_path):
+    srt = tmp_path / "out.srt"
+    lines = ["1\n00:00:00,400 --> 00:00:03,520\nHi\n"]
+    assert runner.write_srt_if_requested(lines, str(srt)) == str(srt)
+    assert srt.read_text() == lines[0]
+
+
+def test_write_srt_if_requested_skips_when_not_requested(runner, tmp_path):
+    media = tmp_path / "m.mp4"
+    media.write_bytes(b"x")
+    assert runner.write_srt_if_requested(["1\nx\n"], None) is None
+    assert not (tmp_path / "m.srt").exists()  # no side-effect file next to media
+
+
+def test_write_srt_if_requested_skips_empty(runner, tmp_path):
+    srt = tmp_path / "out.srt"
+    assert runner.write_srt_if_requested([], str(srt)) is None
+    assert not srt.exists()  # no 0-byte SRTs
+
+
+# ── long-media chunking ───────────────────────────────────────────────
+
+def test_chunk_plan_splits_by_chunk_size(runner):
+    assert runner.chunk_plan(10, 4) == [(0, 4), (4, 8), (8, 10)]
+    assert runner.chunk_plan(8, 4) == [(0, 4), (4, 8)]
+    assert runner.chunk_plan(0, 4) == []
+    # 21 minutes of 16k audio with 20-min chunks → two chunks
+    assert len(runner.chunk_plan(21 * 60 * 16000, 20 * 60 * 16000)) == 2
+
+
+def test_shift_words_offsets_timestamps(runner):
+    words = [("hi", 0.5, 0.9), ("there", 1.0, 1.4)]
+    assert runner.shift_words(words, 1200.0) == [
+        ("hi", 1200.5, 1200.9), ("there", 1201.0, 1201.4),
+    ]
+    assert runner.shift_words([], 5.0) == []

@@ -208,9 +208,23 @@ def main():
     try:
         srt_path = write_srt(segments, media_path, srt_requested)
     except OSError as exc:
-        emitter.emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
-        emitter.close()
-        sys.exit(1)
+        # Media dir may be read-only (mounted disc, network share) — fall
+        # back to a writable temp path instead of aborting after a
+        # successful run; the status line tells the user where it went.
+        import tempfile
+        fallback = os.path.join(
+            tempfile.gettempdir(), f"aisubs_{int(time.time())}_{os.getpid()}.srt"
+        )
+        try:
+            srt_path = write_srt(segments, media_path, fallback)
+        except OSError as exc2:
+            emitter.emit({"type": "error", "msg": f"Could not write SRT: {exc2}"})
+            emitter.close()
+            sys.exit(1)
+        emitter.emit({
+            "type": "status",
+            "msg": f"Could not write SRT next to media ({exc}); wrote {srt_path} instead.",
+        })
 
     emitter.emit({"type": "done", "segments": len(segments), "srt_path": srt_path})
     if debug:

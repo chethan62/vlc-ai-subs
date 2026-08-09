@@ -345,6 +345,13 @@ function start_generation()
     -- Parakeet ignores the model dropdown (fixed parakeet-tdt-0.6b-v2);
     -- show the model that actually runs in the status lines.
     local shown_model = (engine == "parakeet") and "parakeet-tdt-0.6b-v2" or model
+    -- Realtime-OSD mode: write the SRT to a writable temp path (never next
+    -- to the media, and immune to read-only media dirs). "Generate & Load"
+    -- passes "" so the caller derives <media>.srt.
+    local srt_arg = ""
+    if mode == "realtime" then
+        srt_arg = string.gsub(tmp_file, "%.txt$", ".srt")
+    end
     local cmd
     if is_windows() then
         local vbs_file = string.gsub(tmp_file, "%.txt$", ".vbs")
@@ -354,8 +361,8 @@ function start_generation()
             return
         end
         -- In VBScript string literals a literal double-quote is written as ""
-        local raw_cmd = string.format('"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" --debug',
-            python, script, media_path, model, language, task, tmp_file)
+        local raw_cmd = string.format('"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" "%s" --debug',
+            python, script, media_path, model, language, task, tmp_file, srt_arg)
         local vbs_cmd = raw_cmd:gsub('"', '""')
         vf:write('Set sh = CreateObject("WScript.Shell")\n')
         if engine ~= "" then
@@ -371,8 +378,8 @@ function start_generation()
         if engine ~= "" then
             env_prefix = "VSCL_AISUBS_BACKEND=" .. engine .. " "
         end
-        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" --debug',
-            env_prefix, python, script, media_path, model, language, task, tmp_file)
+        cmd = string.format('%s"%s" -u "%s" "%s" "%s" "%s" "%s" "%s" "%s" --debug',
+            env_prefix, python, script, media_path, model, language, task, tmp_file, srt_arg)
     end
 
     vlc.msg.info("[AI Subs] python: " .. python)
@@ -499,6 +506,8 @@ function process_results(tmp_file, mode)
                     osd_channel = osd_channel or register_osd()
                     show_osd(d.text, dur)
                 end
+            elseif d.type == "status" then
+                set_status(d.msg or "")
             elseif d.type == "done" then
                 srt_path  = d.srt_path
                 seg_count = d.segments or seg_count
@@ -509,7 +518,11 @@ function process_results(tmp_file, mode)
     pcall(function() os.remove(tmp_file) end)
 
     if not srt_path then
-        set_status("Error: transcription failed. Check VLC logs for details.")
+        if seg_count == 0 then
+            set_status("No speech detected — nothing to transcribe.")
+        else
+            set_status("Error: transcription failed. Check VLC logs for details.")
+        end
         return
     end
 
