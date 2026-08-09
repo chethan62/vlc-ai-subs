@@ -60,8 +60,10 @@ class WhisperXBackend(TranscriptionBackend):
         # pip-installed packages inside venv-whisperx.
         env = {**os.environ, "PYTHONPATH": ""}
         debug = env.get("VSCL_AISUBS_DEBUG") == "1"
+        # translate runs the NLLB cascade after transcribing — give it room.
+        timeout = 2400 if task == "translate" else 1200
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=1200, env=env,
+            cmd, capture_output=True, text=True, timeout=timeout, env=env,
         )
         if debug:
             # Full dump for forensics — survives the subprocess either way.

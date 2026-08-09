@@ -16,6 +16,8 @@ The SRT file is written ONLY when [srt_path] is given — the plugin's caller
 files next to the media (realtime-OSD mode, read-only media dirs).
 Env:  VSCL_AISUBS_DEVICE=cpu|cuda forces the device; VSCL_AISUBS_COMPUTE
 overrides the compute type; VSCL_AISUBS_MODEL_CACHE sets the HF cache dir.
+Translate task: NLLB-200 cascade by default (VSCL_AISUBS_NLLB=0 reverts to
+Whisper's built-in translate; VSCL_AISUBS_NLLB_MODEL overrides the model dir).
 """
 import json
 import os
@@ -129,6 +131,19 @@ def main():
         sys.exit(1)
 
     import whisperx
+    try:
+        import nllb_translate
+        nllb_ok = True
+    except ImportError:
+        nllb_ok = False
+
+    # NLLB cascade for translate: transcribe in the source language, then
+    # NLLB-200 translates segments to English (research: ~44.7 BLEU CA→EN vs
+    # Whisper's built-in translate). VSCL_AISUBS_NLLB=0 reverts to Whisper.
+    # Falls back to Whisper translate — never silently source-language output.
+    use_nllb = nllb_ok and nllb_translate.should_cascade(
+        task, os.environ.get("VSCL_AISUBS_NLLB")
+    )
 
     # Resolve device: VSCL_AISUBS_DEVICE=cpu|cuda forces it; else auto-detect.
     try:
@@ -139,6 +154,20 @@ def main():
     device = resolve_device(cuda_available)
     compute = resolve_compute(device)
 
+    # Load the NLLB translator up front so a missing/broken model switches to
+    # Whisper translate before any audio is transcribed.
+    translator = None
+    if use_nllb:
+        translator = nllb_translate.try_load_translator(
+            os.environ.get("VSCL_AISUBS_NLLB_MODEL") or nllb_translate.MODEL_DIR_DEFAULT,
+            device="cuda" if device == "cuda" else "cpu",
+            compute_type="int8_float16" if device == "cuda" else "int8",
+        )
+        if translator:
+            emit({"type": "status", "msg": "Translate: NLLB cascade (transcribe → NLLB-200 → English)"})
+        else:
+            emit({"type": "status", "msg": "NLLB model not installed — using Whisper translate. Run ./install-nllb-model.sh"})
+
     emit({"type": "status", "msg": f"WhisperX: loading {model_name} on {device} ({compute})..."})
 
     # 1. Transcribe — VAD-first (whisperx default gate) + hardened decode.
@@ -148,22 +177,47 @@ def main():
         vad_options={"vad_onset": 0.500, "vad_offset": 0.363},
         download_root=model_cache_dir(),
     )
+    emit({"type": "status", "msg": "Transcribing..."})
     result = model.transcribe(
         media_path,
         language=language,
-        task=task,
+        task="transcribe" if translator else task,
     )
     emit({
         "type": "status",
         "msg": f"WhisperX: transcription done (+{time.time() - _t0:.0f}s)",
     })
 
-    # 2. Align (word-level timestamps)
+    # 2. Cascade translation (translate task only, NLLB loaded)
+    if translator and task == "translate":
+        src_code = (result.get("language") or language or "en").lower()
+        src_flores = nllb_translate.flores_code(src_code)
+        if not src_flores:
+            # Unmapped language — re-transcribe with Whisper's translate so
+            # output stays English (never silently source-language).
+            emit({"type": "status", "msg": f"NLLB: no mapping for '{src_code}' — re-running with Whisper translate"})
+            result = model.transcribe(media_path, language=language, task="translate")
+        elif src_flores != nllb_translate.TARGET:
+            emit({"type": "status", "msg": f"NLLB: translating {src_flores} → {nllb_translate.TARGET} (+{time.time() - _t0:.0f}s)"})
+            before = [(s.get("text") or "").strip() for s in result.get("segments", [])]
+            result["segments"] = nllb_translate.translate_segments(
+                result.get("segments", []), src_flores, translator
+            )
+            after = [(s.get("text") or "").strip() for s in result["segments"]]
+            if not nllb_translate.translation_viable(before, after):
+                # Nothing came back translatable — fall back to Whisper.
+                emit({"type": "status", "msg": "NLLB translation failed — re-running with Whisper translate"})
+                result = model.transcribe(media_path, language=language, task="translate")
+        # src_flores == eng_Latn: source is already English — pass through
+
+    # 3. Align (word-level timestamps)
     if device == "cuda" and result.get("segments"):
         try:
-            lang_code = result.get("language") or language or "en"
+            # After any translate path the transcript is English — the align
+            # model must match the transcript, not the source language.
+            align_lang = "en" if task == "translate" else (result.get("language") or language or "en")
             align_model, metadata = whisperx.load_align_model(
-                language_code=lang_code, device=device,
+                language_code=align_lang, device=device,
             )
             result = whisperx.align(
                 result["segments"], align_model, metadata,
@@ -176,9 +230,7 @@ def main():
         except Exception:
             emit({"type": "status", "msg": "Alignment skipped (may need different language model)"})
 
-    emit({"type": "status", "msg": "Transcribing..."})
-
-    # 3. Yield segments + build SRT
+    # 4. Yield segments + build SRT
     segments = result.get("segments", [])
     srt_lines = []
     count = 0
@@ -197,7 +249,7 @@ def main():
             f"{text}\n"
         )
 
-    # 4. Write SRT — only when the caller explicitly requested a path (the
+    # 5. Write SRT — only when the caller explicitly requested a path (the
     # plugin caller owns SRT output; no <media>.srt side effects).
     try:
         srt_path = write_srt_if_requested(srt_lines, srt_requested)

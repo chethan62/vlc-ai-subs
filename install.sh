@@ -73,6 +73,21 @@ else
     ok "sherpa-onnx ready"
 fi
 
+# NLLB-200 model (translate cascade) — ~1.3 GB, CC-BY-NC-4.0. Optional: a
+# failed download must not kill the install (translate falls back to Whisper).
+if [ "${VSCL_AISUBS_SKIP_NLLB:-0}" = "1" ]; then
+    log "Skipping NLLB model (VSCL_AISUBS_SKIP_NLLB=1) — translate will use Whisper"
+elif [ -f "$INSTALL_DIR/nllb-200-distilled-1.3B-int8/model.bin" ]; then
+    ok "NLLB model already installed"
+else
+    log "Installing NLLB model (~1.3GB, CC-BY-NC-4.0)..."
+    if bash "$SCRIPT_DIR/install-nllb-model.sh"; then
+        ok "NLLB model ready"
+    else
+        log "NLLB download failed — translate falls back to Whisper (retry: bash install-nllb-model.sh)"
+    fi
+fi
+
 # ── 4. Sync plugin files ──
 log "Syncing plugin files..."
 mkdir -p "$INSTALL_DIR" "$EXT_DIR"
@@ -80,8 +95,10 @@ cp -r "$SCRIPT_DIR/core" "$INSTALL_DIR/"       2>/dev/null || true
 cp -r "$SCRIPT_DIR/backends" "$INSTALL_DIR/"   2>/dev/null || true
 cp "$SCRIPT_DIR/aisubs_whisper.py" "$INSTALL_DIR/"  2>/dev/null || true
 cp "$SCRIPT_DIR/whisperx_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/nllb_translate.py" "$INSTALL_DIR/"   2>/dev/null || true
 cp "$SCRIPT_DIR/parakeet_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-parakeet-model.sh" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/install-nllb-model.sh" "$INSTALL_DIR/"     2>/dev/null || true
 cp "$SCRIPT_DIR/aisubs.lua" "$EXT_DIR/"             2>/dev/null || true
 ok "Plugin files synced"
 

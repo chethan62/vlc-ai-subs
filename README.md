@@ -31,9 +31,10 @@ cd vlc-ai-subs
 ./install.sh
 ```
 
-`install.sh` is the full installer (WhisperX + Parakeet model + ffmpeg
-check + VLC extension sync). `setup.sh` is the minimal WhisperX-only
-variant (no Parakeet, no ffmpeg check).
+`install.sh` is the full installer (WhisperX + Parakeet + NLLB translate
+models + ffmpeg check + VLC extension sync; NLLB is skippable via
+`VSCL_AISUBS_SKIP_NLLB=1`). `setup.sh` is the minimal WhisperX-only
+variant (no Parakeet, no NLLB, no ffmpeg check).
 
 ### Windows
 
@@ -74,6 +75,11 @@ hits on music/silence. WhisperX handles non-English and translate.
 - WhisperX decode is hardened for movies (beam 1, no cross-window
   conditioning, silence/hallucination gates) — research-backed, see
   `.research/final_report.md` §2.2.
+- Translate uses the **NLLB-200 cascade** (WhisperX transcribes in the
+  source language, NLLB-200 translates to English — research: ~44.7 BLEU
+  CA→EN vs Whisper's built-in translate). The model is ~1.3 GB,
+  **CC-BY-NC-4.0** (research/non-commercial); `VSCL_AISUBS_NLLB=0` reverts
+  to Whisper translate, and unmapped languages fall back automatically.
 - Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
   checks for it up front and aborts with a clear message otherwise (the
   runner also errors cleanly if ffmpeg is missing at runtime).
@@ -101,6 +107,8 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_DEVICE` | `cuda` \\| `cpu` | auto | WhisperX (runner) |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
+| `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
+| `VSCL_AISUBS_NLLB_MODEL` | directory path | `~/.local/share/vlc-ai-subs/nllb-200-distilled-1.3B-int8` | translate task |
 
 ## Architecture
 
@@ -194,7 +202,7 @@ If the setup script doesn't work for your system:
    - **Linux**: `~/.local/share/vlc/lua/extensions/`
    - **macOS**: `~/Library/Application Support/org.videolan.vlc/lua/extensions/`
    - **Windows**: `%APPDATA%\vlc\lua\extensions\`
-3. Place the Python files (`aisubs_whisper.py`, `whisperx_runner.py`, `core/`, `backends/`) next to `venv-whisperx` (the backend falls back to `~/.local/share/vlc-ai-subs/`).
+3. Place the Python files (`aisubs_whisper.py`, `whisperx_runner.py`, `nllb_translate.py`, `parakeet_runner.py`, `core/`, `backends/`) next to `venv-whisperx` (the backend falls back to `~/.local/share/vlc-ai-subs/`).
 4. Restart VLC.
 
 ## Credits

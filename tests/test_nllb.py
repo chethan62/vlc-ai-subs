@@ -1,0 +1,97 @@
+"""Unit tests for nllb_translate.py (imported standalone — no heavy deps).
+
+The heavy imports (ctranslate2, transformers) only happen inside
+NllbTranslator.__init__, so the pure logic is testable in the dev venv.
+"""
+
+import importlib.util
+from pathlib import Path
+
+_RUNNER = Path(__file__).resolve().parent.parent / "nllb_translate.py"
+_spec = importlib.util.spec_from_file_location("nllb_translate", _RUNNER)
+nllb = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(nllb)
+
+
+def test_flores_code_common_languages():
+    assert nllb.flores_code("en") == "eng_Latn"
+    assert nllb.flores_code("fr") == "fra_Latn"
+    assert nllb.flores_code("zh") == "zho_Hans"
+    assert nllb.flores_code("ja") == "jpn_Jpan"
+    assert nllb.flores_code("ru") == "rus_Cyrl"
+    assert nllb.flores_code("hi") == "hin_Deva"
+    assert nllb.flores_code("ar") == "arb_Arab"
+
+
+def test_flores_code_unmapped_and_case():
+    assert nllb.flores_code("haw") is None  # Hawaiian not in NLLB-200
+    assert nllb.flores_code("br") is None
+    assert nllb.flores_code(None) is None
+    assert nllb.flores_code("FR") == "fra_Latn"  # case-insensitive
+    assert nllb.flores_code(" en ") == "eng_Latn"
+
+
+def test_should_cascade():
+    assert nllb.should_cascade("translate", "1") is True
+    assert nllb.should_cascade("translate", None) is True
+    assert nllb.should_cascade("translate", "0") is False
+    assert nllb.should_cascade("translate", "false") is False
+    assert nllb.should_cascade("transcribe", "1") is False
+    assert nllb.should_cascade("transcribe", "0") is False
+
+
+def test_try_load_translator_missing_dir_returns_none():
+    assert nllb.try_load_translator("/nonexistent/nllb-model") is None
+    assert nllb.try_load_translator(None) is None
+
+
+class _FakeTranslator:
+    def __init__(self, fail_on=None):
+        self._fail = fail_on
+
+    def translate(self, text, src_lang):
+        if self._fail and self._fail in text:
+            raise RuntimeError("boom")
+        return "[TR] " + text
+
+
+def test_translate_segments_preserves_timestamps():
+    segs = [
+        {"start": 0.4, "end": 3.52, "text": "Bonjour tout le monde"},
+        {"start": 3.68, "end": 4.64, "text": "Au revoir"},
+    ]
+    out = nllb.translate_segments(segs, "fra_Latn", _FakeTranslator())
+    assert [s["start"] for s in out] == [0.4, 3.68]
+    assert [s["end"] for s in out] == [3.52, 4.64]
+    assert out[0]["text"] == "[TR] Bonjour tout le monde"
+    assert out[1]["text"] == "[TR] Au revoir"
+
+
+def test_translate_segments_keeps_source_on_failure():
+    segs = [
+        {"start": 0.0, "end": 1.0, "text": "Bad text"},
+        {"start": 1.0, "end": 2.0, "text": "ok"},
+    ]
+    out = nllb.translate_segments(segs, "fra_Latn", _FakeTranslator(fail_on="Bad"))
+    assert out[0]["text"] == "Bad text"  # failed segment keeps source text
+    assert out[0]["start"] == 0.0        # timestamps untouched
+    assert out[1]["text"] == "[TR] ok"   # the run continues
+
+
+def test_translate_segments_skips_blank():
+    segs = [
+        {"start": 0.0, "end": 1.0, "text": "  "},
+        {"start": 1.0, "end": 2.0, "text": "Hi"},
+    ]
+    out = nllb.translate_segments(segs, "fra_Latn", _FakeTranslator())
+    assert out[0]["text"] == ""
+    assert out[1]["text"] == "[TR] Hi"
+
+
+def test_translation_viable():
+    assert nllb.translation_viable(["a", "b"], ["x", "y"]) is True   # full success
+    assert nllb.translation_viable(["a", "b"], ["x", ""]) is True    # partial OK
+    assert nllb.translation_viable(["a", "b"], ["", ""]) is False    # total failure
+    assert nllb.translation_viable(["a", "b"], ["a", "b"]) is False  # all raised → unchanged
+    assert nllb.translation_viable([], []) is True                   # empty transcript
+    assert nllb.translation_viable(["", ""], ["", ""]) is True       # nothing to do
