@@ -109,6 +109,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
 | `VSCL_AISUBS_NLLB_MODEL` | directory path | `~/.local/share/vlc-ai-subs/nllb-200-distilled-1.3B-int8` | translate task |
+| `VSCL_AISUBS_BLOCKLIST` | `1` \| `0` | `1` | hallucination-phrase filter (research §2.2) |
 
 ## Architecture
 

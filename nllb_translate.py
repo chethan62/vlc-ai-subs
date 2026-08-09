@@ -83,23 +83,37 @@ class NllbTranslator:
         self._ct = ctranslate2.Translator(model_dir, device=device, compute_type=compute_type)
         self._tok = AutoTokenizer.from_pretrained(model_dir, src_lang=TARGET)
 
-    def translate(self, text: str, src_lang: str, tgt_lang: str = TARGET) -> str:
-        # Official ctranslate2 NLLB pattern (docs → Transformers → NLLB):
-        # tokenize WITH special tokens (the tokenizer adds the source-lang
-        # token and </s>; ctranslate2 does not add them itself), pass the
-        # target-lang code WITHOUT "__" delimiters as target_prefix, and
-        # strip the first output token — it is the target-lang prefix.
+    def translate_batch(self, texts: list, src_lang: str, tgt_lang: str = TARGET) -> list:
+        """Translate several texts in one model call (much cheaper than N per-call).
+
+        Follows the official ctranslate2 NLLB pattern (docs → Transformers →
+        NLLB): tokenize WITH special tokens (the tokenizer adds the source-lang
+        token and </s>; ctranslate2 does not add them itself), pass the
+        target-lang code WITHOUT "__" delimiters as target_prefix, and strip
+        the first output token of each hypothesis — it is the target-lang
+        prefix. Raises on failure; callers apply per-segment tolerance.
+        """
         self._tok.src_lang = src_lang
-        tokens = self._tok.convert_ids_to_tokens(
-            self._tok(text, add_special_tokens=True)["input_ids"]
-        )
-        result = self._ct.translate_batch(
-            [tokens],
-            target_prefix=[[tgt_lang]],
+        sources = [
+            self._tok.convert_ids_to_tokens(
+                self._tok(text, add_special_tokens=True)["input_ids"]
+            )
+            for text in texts
+        ]
+        results = self._ct.translate_batch(
+            sources,
+            target_prefix=[[tgt_lang]] * len(sources),
             beam_size=1,
         )
-        out = result[0].hypotheses[0][1:]  # ctranslate2 ≥4: per-hypothesis list
-        return self._tok.decode(self._tok.convert_tokens_to_ids(out)).strip()
+        translated = []
+        for r in results:
+            out = r.hypotheses[0][1:]  # ctranslate2 ≥4: per-hypothesis list
+            translated.append(self._tok.decode(self._tok.convert_tokens_to_ids(out)).strip())
+        return translated
+
+    def translate(self, text: str, src_lang: str, tgt_lang: str = TARGET) -> str:
+        """Translate a single text (thin wrapper over translate_batch)."""
+        return self.translate_batch([text], src_lang, tgt_lang)[0]
 
 
 def try_load_translator(
@@ -130,18 +144,50 @@ def translation_viable(before_texts: list, after_texts: list) -> bool:
     return (not any(before_texts)) or (any(after_texts) and after_texts != before_texts)
 
 
+BATCH_SIZE = 16  # segment texts per ctranslate2 translate_batch call
+
+
 def translate_segments(segments: list, src_flores: str, translator: NllbTranslator) -> list:
     """Translate each segment's text to English; timestamps preserved.
 
-    A single segment that fails keeps its original text (the run continues).
+    Non-blank segments are translated in batches (one model call per batch —
+    hundreds of segments on a movie would otherwise be hundreds of sequential
+    calls). A batch that raises falls back to per-segment calls, and a segment
+    that still fails keeps its original text (the run continues).
     """
     out = []
-    for seg in segments:
+    pending_idx: list = []
+    pending_text: list = []
+    for i, seg in enumerate(segments):
         text = (seg.get("text") or "").strip()
         if text:
-            try:
-                text = translator.translate(text, src_flores)
-            except Exception as exc:  # noqa: BLE001 — one bad segment ≠ failed run
-                logger.warning("NLLB segment translate failed (%s) — keeping source text", exc)
+            pending_idx.append(i)
+            pending_text.append(text)
+
+    translated: dict = {}
+    for start in range(0, len(pending_text), BATCH_SIZE):
+        chunk = pending_text[start:start + BATCH_SIZE]
+        try:
+            if hasattr(translator, "translate_batch"):
+                res = translator.translate_batch(chunk, src_flores)
+            else:
+                res = [translator.translate(t, src_flores) for t in chunk]
+        except Exception as exc:  # noqa: BLE001 — retry per segment, keep source
+            logger.warning("NLLB batch translate failed (%s) — retrying per segment", exc)
+            res = []
+            for t in chunk:
+                try:
+                    res.append(translator.translate(t, src_flores))
+                except Exception as exc2:  # noqa: BLE001 — one bad segment ≠ failed run
+                    logger.warning("NLLB segment translate failed (%s) — keeping source text", exc2)
+                    res.append(None)
+        for i, t in zip(pending_idx[start:start + BATCH_SIZE], res):
+            if t is not None:
+                translated[i] = t
+
+    for i, seg in enumerate(segments):
+        text = translated.get(i)
+        if text is None:
+            text = (seg.get("text") or "").strip()
         out.append({**seg, "text": text})
     return out

@@ -95,3 +95,60 @@ def test_translation_viable():
     assert nllb.translation_viable(["a", "b"], ["a", "b"]) is False  # all raised → unchanged
     assert nllb.translation_viable([], []) is True                   # empty transcript
     assert nllb.translation_viable(["", ""], ["", ""]) is True       # nothing to do
+
+
+class _FakeBatchedTranslator:
+    """Mimics NllbTranslator.translate_batch (the real one is lazy-loaded)."""
+
+    def __init__(self, fail_batch=False, fail_on=None):
+        self._fail_batch = fail_batch
+        self._fail_on = fail_on
+
+    def translate_batch(self, texts, src_lang):
+        if self._fail_batch:
+            raise RuntimeError("batch boom")
+        out = []
+        for t in texts:
+            if self._fail_on and self._fail_on in t:
+                raise RuntimeError("boom")
+            out.append("[TR] " + t)
+        return out
+
+    def translate(self, text, src_lang):
+        if self._fail_on and self._fail_on in text:
+            raise RuntimeError("boom")
+        return "[TR] " + text
+
+
+def test_translate_segments_batches():
+    segs = [
+        {"start": 0.4, "end": 3.52, "text": "Bonjour"},
+        {"start": 3.68, "end": 4.64, "text": "Au revoir"},
+        {"start": 4.96, "end": 7.04, "text": "Merci"},
+    ]
+    out = nllb.translate_segments(segs, "fra_Latn", _FakeBatchedTranslator())
+    assert [s["text"] for s in out] == ["[TR] Bonjour", "[TR] Au revoir", "[TR] Merci"]
+    assert [s["start"] for s in out] == [0.4, 3.68, 4.96]  # timestamps preserved
+
+
+def test_translate_segments_batch_failure_falls_back_per_segment():
+    segs = [
+        {"start": 0.0, "end": 1.0, "text": "Good text"},
+        {"start": 1.0, "end": 2.0, "text": "Bad text"},
+        {"start": 2.0, "end": 3.0, "text": "Fine"},
+    ]
+    t = _FakeBatchedTranslator(fail_batch=True, fail_on="Bad")
+    out = nllb.translate_segments(segs, "fra_Latn", t)
+    # batch raised → per-segment retry; "Bad text" still fails → source kept
+    assert out[0]["text"] == "[TR] Good text"
+    assert out[1]["text"] == "Bad text"
+    assert out[2]["text"] == "[TR] Fine"
+
+
+def test_translate_segments_multiple_batches_preserve_order():
+    """> BATCH_SIZE segments → multiple translate_batch calls, order preserved."""
+    n = nllb.BATCH_SIZE * 2 + 3
+    segs = [{"start": float(i), "end": float(i) + 1.0, "text": f"Phrase {i}"} for i in range(n)]
+    out = nllb.translate_segments(segs, "fra_Latn", _FakeBatchedTranslator())
+    assert [s["text"] for s in out] == [f"[TR] Phrase {i}" for i in range(n)]
+    assert [s["start"] for s in out] == [float(i) for i in range(n)]

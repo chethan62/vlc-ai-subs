@@ -188,7 +188,12 @@ def main():
         "msg": f"WhisperX: transcription done (+{time.time() - _t0:.0f}s)",
     })
 
-    # 2. Cascade translation (translate task only, NLLB loaded)
+    # 2. Hallucination blocklist (research §2.2) — before the cascade and
+    # alignment so garbage segments aren't translated or GPU-aligned.
+    from core.blocklist import filter_segments
+    result["segments"] = filter_segments(result.get("segments", []))
+
+    # 2b. Cascade translation (translate task only, NLLB loaded)
     if translator and task == "translate":
         src_code = (result.get("language") or language or "en").lower()
         src_flores = nllb_translate.flores_code(src_code)
@@ -209,6 +214,10 @@ def main():
                 emit({"type": "status", "msg": "NLLB translation failed — re-running with Whisper translate"})
                 result = model.transcribe(media_path, language=language, task="translate")
         # src_flores == eng_Latn: source is already English — pass through
+
+    # Re-apply the blocklist: the fallback branches produced fresh unfiltered
+    # segments, and NLLB-translated output may itself match an English phrase.
+    result["segments"] = filter_segments(result.get("segments", []))
 
     # 3. Align (word-level timestamps)
     if device == "cuda" and result.get("segments"):

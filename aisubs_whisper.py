@@ -30,6 +30,7 @@ import time
 
 from core.emitter import Emitter
 from core.srt import write_srt
+from core.blocklist import filter_segments
 from backends import resolve_backend
 
 # ── Debug logging ────────────────────────────────────────────────────
@@ -194,8 +195,13 @@ def main():
         _log_debug(f"transcription done: {len(segments)} segments in {time.time() - _t1:.1f}s")
 
     # Write SRT (skip if no segments — avoids empty .srt files)
+    # Drop known hallucination segments (research §2.2) before writing.
+    raw_empty = not segments
+    segments = filter_segments(segments)
     if not segments:
-        emitter.emit({"type": "status", "msg": "No speech detected — skipping SRT."})
+        msg = ("No speech detected — skipping SRT." if raw_empty
+               else "All segments filtered by the hallucination blocklist — skipping SRT.")
+        emitter.emit({"type": "status", "msg": msg})
         emitter.emit({"type": "done", "segments": 0, "srt_path": None})
         emitter.close()
         sys.exit(0)

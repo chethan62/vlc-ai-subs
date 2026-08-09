@@ -232,6 +232,10 @@ def main():
 
     segments = words_to_segments(words)
 
+    # Drop known hallucination segments (research §2.2) before emitting.
+    from core.blocklist import filter_segments
+    segments = filter_segments(segments)
+
     srt_lines = []
     for i, seg in enumerate(segments, 1):
         emit({"type": "sub", "i": i,
