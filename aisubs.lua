@@ -51,7 +51,12 @@ local POLL_US     = 1000000  -- poll every 1 second (was 3s)
 
 -- Seed the temp-name RNG once at load — predictable /tmp names are a
 -- symlink-attack vector (see get_temp_file).
-math.randomseed(os.time() * 1000 + (os.clock() * 1000) % 1000)
+-- Guarded: VLC's extension *scan* runs scripts in a bare lua state with no
+-- standard libs (math is nil) — an unguarded call here aborts registration.
+-- At runtime GetLuaState() opens all libs, so the seed then actually runs.
+if math then
+    math.randomseed(os.time() * 1000 + (os.clock() * 1000) % 1000)
+end
 
 ----------------------------------------------------------------
 -- Lifecycle
