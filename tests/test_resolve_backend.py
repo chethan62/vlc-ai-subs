@@ -1,12 +1,16 @@
 """Tests for backend resolution.
 
-- WhisperX is the DEFAULT engine (VSCL_AISUBS_BACKEND unset or legacy).
+- WhisperX is the DEFAULT engine (VSCL_AISUBS_BACKEND unset or legacy value).
 - `VSCL_AISUBS_BACKEND=parakeet` opts into the Parakeet backend (English).
-- Any other value is ignored → WhisperX.
+- `VSCL_AISUBS_BACKEND=whispercpp` (alias: whisper_cpp) selects whisper.cpp,
+  the Vulkan engine that accelerates AMD/Intel GPUs.
+- `auto` (and unset) applies the hardware policy: NVIDIA → WhisperX, else a
+  Vulkan whisper.cpp, else WhisperX on CPU.
 """
 
 import pytest
 
+import backends
 from backends import resolve_backend
 
 
@@ -36,11 +40,97 @@ def test_resolve_returns_whisperx_by_default(monkeypatch, tmp_path):
 
 
 def test_legacy_env_values_are_ignored(monkeypatch, tmp_path):
-    """whisper_cpp/moonshine/... must fall through to WhisperX."""
+    """moonshine/whisper_cpp-era values must fall through to WhisperX (the
+    whisper_cpp alias is covered below)."""
     _fake_whisperx_backend(monkeypatch, tmp_path)
-    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "whisper_cpp")
+    monkeypatch.setattr(backends, "nvidia_gpu", lambda: None)
+    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "moonshine")
     be = resolve_backend()
     assert "whisperx" in be.name().lower()
+
+
+# ── whisper.cpp (Vulkan: AMD/Intel/NVIDIA) ─────────────────────────────
+
+def _fake_whispercpp(monkeypatch, vulkan=True):
+    import backends.whispercpp as wc
+
+    # Plain lambda (not classmethod): detect() is called on the class, so it
+    # receives no args, and pyright can see the real constructor's signature.
+    monkeypatch.setattr(
+        wc.WhisperCppBackend, "detect",
+        lambda: wc.WhisperCppBackend(binary="/bin/true", vulkan=vulkan),
+    )
+    return wc
+
+
+def test_whispercpp_env_selects_the_vulkan_engine(monkeypatch):
+    _fake_whispercpp(monkeypatch)
+    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "whispercpp")
+    be = resolve_backend()
+    assert "whisper.cpp" in be.name() and "vulkan" in be.name()
+
+
+def test_whisper_cpp_alias_selects_the_vulkan_engine(monkeypatch):
+    """The pre-fork env value should reach the new engine, not be ignored."""
+    _fake_whispercpp(monkeypatch, vulkan=False)
+    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "whisper_cpp")
+    be = resolve_backend()
+    assert "whisper.cpp" in be.name() and "cpu" in be.name()
+
+
+def test_whispercpp_missing_raises_install_hint(monkeypatch):
+    import backends.whispercpp as wc
+
+    monkeypatch.setenv("VSCL_AISUBS_BACKEND", "whispercpp")
+    monkeypatch.setattr(wc.WhisperCppBackend, "detect", classmethod(lambda cls: None))
+    with pytest.raises(RuntimeError) as exc:
+        resolve_backend()
+    msg = str(exc.value)
+    assert "whisper.cpp backend is not available" in msg
+    assert "install-whisper-cpp.sh" in msg
+
+
+# ── hardware policy ("auto" / unset) ───────────────────────────────────
+
+def test_auto_prefers_whisperx_on_nvidia(monkeypatch, tmp_path):
+    """faster-whisper's CUDA path beats Vulkan for quality — NVIDIA wins."""
+    _fake_whisperx_backend(monkeypatch, tmp_path)
+    _fake_whispercpp(monkeypatch)
+    monkeypatch.setattr(backends, "nvidia_gpu", lambda: "GeForce GTX 1650")
+    monkeypatch.delenv("VSCL_AISUBS_BACKEND", raising=False)
+    assert "whisperx" in resolve_backend().name().lower()
+
+
+def test_auto_uses_whispercpp_on_a_vulkan_only_machine(monkeypatch):
+    """No NVIDIA + a Vulkan driver (AMD/Intel) → the Vulkan engine."""
+    _fake_whispercpp(monkeypatch)
+    monkeypatch.setattr(backends, "nvidia_gpu", lambda: None)
+    monkeypatch.setattr(backends, "vulkan_icds", lambda: ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"])
+    monkeypatch.setattr(backends, "vulkan_gpu_driver", lambda: "AMD")
+    monkeypatch.delenv("VSCL_AISUBS_BACKEND", raising=False)
+    be = resolve_backend()
+    assert "whisper.cpp" in be.name() and "vulkan" in be.name()
+
+
+def test_auto_uses_whisperx_when_no_gpu_at_all(monkeypatch, tmp_path):
+    _fake_whisperx_backend(monkeypatch, tmp_path)
+    _fake_whispercpp(monkeypatch)
+    monkeypatch.setattr(backends, "nvidia_gpu", lambda: None)
+    monkeypatch.setattr(backends, "vulkan_icds", lambda: [])
+    monkeypatch.delenv("VSCL_AISUBS_BACKEND", raising=False)
+    assert "whisperx" in resolve_backend().name().lower()
+
+
+def test_auto_falls_back_when_vulkan_exists_without_whispercpp(monkeypatch, tmp_path):
+    """A Vulkan driver alone is not enough — no engine installed → WhisperX."""
+    import backends.whispercpp as wc
+
+    _fake_whisperx_backend(monkeypatch, tmp_path)
+    monkeypatch.setattr(backends, "nvidia_gpu", lambda: None)
+    monkeypatch.setattr(backends, "vulkan_icds", lambda: ["intel_icd.x86_64.json"])
+    monkeypatch.setattr(wc.WhisperCppBackend, "detect", classmethod(lambda cls: None))
+    monkeypatch.delenv("VSCL_AISUBS_BACKEND", raising=False)
+    assert "whisperx" in resolve_backend().name().lower()
 
 
 def test_parakeet_env_returns_parakeet_backend(monkeypatch):
@@ -75,7 +165,7 @@ def test_missing_whisperx_raises_helpful_error(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         resolve_backend()
     msg = str(exc.value)
-    assert "WhisperX is not available" in msg
+    assert "WhisperX backend is not available" in msg
     assert "venv-whisperx" in msg  # points at the fix
 
 

@@ -10,12 +10,15 @@ or real-time on-screen captions.
 
 | | |
 |---|---|
-| **Zero-config** | "Recommended (auto)" model + Translate to English by default — open a video, click Generate, done |
+| **Zero-config** | "Recommended (auto)" model + Auto engine + Translate to English by default — open a video, click Generate, done |
 | **Word-level timing** | WhisperX wav2vec2 alignment on CUDA, or Parakeet's native TDT word timestamps (CPU too) |
-| **Two engines** | WhisperX (multilingual, word-aligned) or Parakeet (English, ~10× faster) |
-| **GPU acceleration** | CUDA auto-detected (int8_float16), CPU fallback — works on NVIDIA, AMD, Intel |
-| **Two modes** | Real-time OSD (subtitles appear as they're generated) or Generate & Load SRT |
+| **Three engines** | WhisperX (multilingual, word-aligned), Parakeet (English, ~10× faster) or whisper.cpp (Vulkan) |
+| **Auto engine** | Auto (default) picks Parakeet for English transcriptions, else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) |
+| **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
+| **Two modes** | Generate & Load SRT (default) or OSD captions (Real-time OSD — each cue is pushed to the OSD as it is produced) |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
+| **Readable cues** | Text is wrapped to ≤2 lines × 42 chars (CJK-aware) with min-duration and gap cleanup |
+| **Cancel + memory** | Cancel a running transcription; the dialog remembers engine/model/language/task/mode |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
 | **VLC 3.x & 4.x** | Works with current and next-gen VLC |
@@ -32,9 +35,11 @@ cd vlc-ai-subs
 ```
 
 `install.sh` is the full installer (WhisperX + Parakeet + NLLB translate
-models + ffmpeg check + VLC extension sync; NLLB is skippable via
-`VSCL_AISUBS_SKIP_NLLB=1`). `setup.sh` is the minimal WhisperX-only
-variant (no Parakeet, no NLLB, no ffmpeg check).
+models + whisper.cpp/Vulkan on machines without an NVIDIA GPU + ffmpeg check +
+VLC extension sync; NLLB is skippable via
+`VSCL_AISUBS_SKIP_NLLB=1`, whisper.cpp via `VSCL_AISUBS_SKIP_WHISPERCPP=1`).
+`setup.sh` is the minimal WhisperX-only
+variant (no Parakeet, no NLLB, no whisper.cpp, no ffmpeg check).
 
 ### Windows
 
@@ -51,17 +56,64 @@ Then:
 3. **View → AI Subs Generator**
 4. Click **Generate**
 
+> **Where you clone matters on Windows.** `setup.bat` installs the Lua extension
+> and the WhisperX venv only — it does not copy the Python files. The extension
+> looks for `aisubs_whisper.py` in `%USERPROFILE%\Documents\vlc-ai-subs`,
+> `…\Desktop\vlc-ai-subs`, `…\Desktop\aisubs`, `…\vlc-ai-subs` or
+> `%APPDATA%\vlc-ai-subs`, so clone into one of those (or move the files there).
+> Parakeet and the NLLB/M2M translate cascade install via the Linux/macOS `bash`
+> scripts, so a Windows translate task falls back to Whisper translate.
+
 ## Engines
 
-| Engine | Languages | Word timing | Speed (this box) | License |
+| Engine | Languages | Word timing | Speed | License |
 |---|---|---|---|---|
-| **WhisperX** (default) | 99 (faster-whisper + wav2vec2 alignment) | wav2vec2 forced alignment | ~2–4× realtime (medium) | BSD-2 + MIT |
+| **WhisperX** (default) | 99 (faster-whisper + wav2vec2 alignment) | wav2vec2 forced alignment | ~2–4× realtime (medium, GPU-dependent) | BSD-2 + MIT |
 | **Parakeet** (opt-in: `VSCL_AISUBS_BACKEND=parakeet`) | English only | **native TDT word timestamps** (no aligner) | **~10× faster, CPU-friendly** | CC-BY-4.0 |
+| **whisper.cpp** (Vulkan: AMD/Intel too) | 99 (whisper.cpp / ggml) | segment-level (no aligner) | GPU via Vulkan, CPU fallback | MIT |
 
-Pick **Parakeet** in the dialog for English films — WER 6.05% (beats Whisper
-large-v3 7.44% on the Open-ASR leaderboard), ~0.7 GB int8 model, and its
-transducer decoder structurally avoids the hallucination loops Whisper
-hits on music/silence. WhisperX handles non-English and translate.
+Pick **Parakeet** in the dialog for English films — self-reported mean WER
+6.05% on the HF Open-ASR leaderboard (independent 2026 evals put
+whisper-large-v3 at 7.44% on a comparable English eval), ~0.7 GB int8 model,
+and its transducer decoder structurally avoids the hallucination loops
+Whisper hits on music/silence. WhisperX handles non-English and translate.
+
+**Auto (the default)** behaves like the recommendation: it runs Parakeet for an
+English transcription (`language: en`) and otherwise applies the hardware
+policy — NVIDIA → WhisperX, a Vulkan-only GPU (AMD/Intel) → whisper.cpp,
+nothing usable → WhisperX on CPU. Translation always needs WhisperX (Parakeet
+cannot translate), and Parakeet has no language detection, so `auto` language
+stays off it. Choosing Parakeet explicitly with translate or a non-English
+language falls back to WhisperX with a note in the status line instead of
+failing the run.
+
+### AMD / Intel GPUs (Vulkan)
+
+WhisperX accelerates on NVIDIA CUDA only — faster-whisper/CTranslate2 has no
+ROCm backend, so an AMD or Intel GPU gets *CPU speed* from it. The fix is
+**whisper.cpp**, the one Whisper runtime with a Vulkan backend, and Vulkan is
+vendor-neutral: the same binary drives Radeon, Arc and GeForce GPUs, falling
+back to CPU when no device is present.
+
+```bash
+./install-whisper-cpp.sh small     # builds whisper.cpp with GGML_VULKAN=ON + ggml model
+# then either pick "whisper.cpp (Vulkan …)" in the dialog, or leave Engine on Auto
+```
+
+- `install.sh` runs that automatically on machines **without** an NVIDIA GPU
+  (set `VSCL_AISUBS_WHISPERCPP=1` to install it on an NVIDIA box too, or
+  `VSCL_AISUBS_SKIP_WHISPERCPP=1` to skip it).
+- The engine needs no Python ML packages — only ffmpeg and the binary — so it
+  works even when `venv-whisperx` is absent.
+- Measured on this repo's dev box (a power-capped GTX 1650, so the gain here is
+  a floor): **60 s clip, `small` → 22.9 s on Vulkan vs 32.8 s on CPU**.
+  `VSCL_AISUBS_DEVICE=cpu` forces `-ng` (no GPU) for a comparison.
+- Trade-offs vs WhisperX: segment-level timestamps only (no wav2vec2 word
+  alignment) and `translate` uses Whisper's built-in `-tr`, not the NLLB
+  cascade. Both are reported in the dialog's status line.
+- Verified here on Vulkan/NVIDIA (`Vulkan GPU: NVIDIA GeForce GTX 1650`); AMD
+  and Intel share this code path and binary flags but no such GPU was available
+  in the development machine, so per-vendor driver behaviour is untested.
 
 - WhisperX requires Python **< 3.14**, so it runs in its own Python 3.12 venv
   (`venv-whisperx`), launched as a subprocess with the same JSONL contract.
@@ -83,8 +135,9 @@ hits on music/silence. WhisperX handles non-English and translate.
 - Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
   checks for it up front and aborts with a clear message otherwise (the
   runner also errors cleanly if ffmpeg is missing at runtime).
-- Long media is decoded in ≤20-min chunks — the 0.6B TDT model's
-  single-pass design limit is ~24 min (`.research/final_report.md` §2.1).
+- Long media is decoded in ≤20-min chunks (`CHUNK_SECONDS` in
+  `parakeet_runner.py`) — the 0.6B TDT model ingests at most ~24 min in a
+  single forward pass (`.research/asr_report.json`).
 
 ## Models
 
@@ -103,14 +156,22 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 
 | Variable | Values | Default | Applies to |
 |----------|--------|---------|------------|
-| `VSCL_AISUBS_BACKEND` | `whisperx` \\| `parakeet` | `whisperx` | backend selection |
-| `VSCL_AISUBS_DEVICE` | `cuda` \\| `cpu` | auto | WhisperX (runner) |
+| `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `auto` | `auto` | backend selection |
+| `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` | auto | WhisperX (runner); `cpu` = `-ng` for whisper.cpp |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
 | `VSCL_AISUBS_NLLB_MODEL` | directory path | `~/.local/share/vlc-ai-subs/nllb-200-distilled-1.3B-int8` | translate task |
 | `VSCL_AISUBS_NLLB_FAMILY` | `nllb` \| `m2m100` | `nllb` | cascade model family (m2m100 = MIT) |
 | `VSCL_AISUBS_BLOCKLIST` | `1` \| `0` | `1` | hallucination-phrase filter (research §2.2) |
+| `VSCL_AISUBS_DEBUG` | `1` \| unset | unset | debug logs to stderr + `/tmp` (main CLI, runners) |
+| `VSCL_AISUBS_SKIP_NLLB` | `1` \| unset | unset | `install.sh` only: skip the NLLB model download |
+| `VSCL_AISUBS_TIMEOUT` | seconds (`0` = no limit) | 4 h transcribe / 6 h translate | backend subprocess ceiling (long films) |
+| `VSCL_AISUBS_MAX_LINE` | characters (min 8) | 42 (20 for CJK) | cue line width |
+| `VSCL_AISUBS_WHISPERCPP_BIN` | path to `whisper-cli` | auto-detected | whisper.cpp engine |
+| `VSCL_AISUBS_WHISPERCPP_MODEL` | path to a `ggml-*.bin` | best installed | whisper.cpp engine |
+| `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
+| `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
 
 ## Architecture
 
@@ -119,13 +180,22 @@ aisubs.lua                   VLC extension (dialog + timer polling)
 aisubs_whisper.py            CLI entry-point (args → backend → JSONL → SRT)
 whisperx_runner.py           WhisperX inside the Python 3.12 venv (subprocess)
 parakeet_runner.py           Parakeet TDT via sherpa-onnx (same JSONL contract)
+whispercpp_runner.py         whisper.cpp via whisper-cli — Vulkan (AMD/Intel/NVIDIA)
+nllb_translate.py            NLLB-200 / M2M-100 translate cascade (ctranslate2)
 core/
   emitter.py                 JSONL + Lua poll-mirror output
   srt.py                     SRT timestamp formatting + file writing
+  cues.py                    cue line-wrapping + timing quality pass
+  blocklist.py               hallucination-phrase filter (VSCL_AISUBS_BLOCKLIST)
+  audio.py                   ffmpeg decode to 16 kHz mono wav
+  gpu.py                     NVIDIA/Vulkan capability probes (engine choice)
+  procs.py                   live-child registry (cancellation)
+  timeouts.py                backend subprocess ceilings (VSCL_AISUBS_TIMEOUT)
 backends/
   base.py                    TranscriptionBackend ABC
   whisperx_backend.py        WhisperX (Python 3.12 subprocess, PYTHONPATH-cleaned)
   parakeet.py                Parakeet (sherpa-onnx, English, CPU)
+  whispercpp.py              whisper.cpp (Vulkan-capable, no Python ML deps)
 ```
 
 **JSONL contract (stdout):** `{"type":"status","msg":...}`, `{"type":"sub","i":N,"start":S,"end":E,"text":...}`, `{"type":"done","segments":N,"srt_path":...}`, `{"type":"error","msg":...}`. Lua polls the mirror file (argv[5]) for progress.
@@ -137,13 +207,21 @@ backends/
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 82 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 147 tests (model-free)
 ```
 
 Coverage: SRT formatting (float-drift-safe rounding, rollover, clamp),
+cue wrapping + timing cleanup (word-boundary/balanced/CJK, min duration/gap),
 JSONL emitter + mirror file, VRAM/RAM model recommendation (boundary cases),
-backend resolution (WhisperX default, Parakeet opt-in, missing-backend errors),
-runner CLI errors, and the main CLI's JSONL error contract. No WhisperX
+backend resolution (WhisperX default, Parakeet opt-in, whisper.cpp + its
+`whisper_cpp` alias, the auto hardware policy, missing-backend errors),
+runner CLI errors, Parakeet token-merge + cue grouping, whisper.cpp argv/JSON
+(ms→s) parsing + model resolution, NLLB/M2M batch
+translation + language-map fallback, hallucination-blocklist matching,
+backend subprocess timeouts + cancellable children (real processes), model-name
+resolution, the runners'
+SRT side-effect guard, and the
+main CLI's JSONL error contract. No WhisperX
 model download needed — transcription is out of scope for unit tests.
 
 The `PYTHONPATH=` prefix neutralizes any foreign `PYTHONPATH` exported by
@@ -153,9 +231,9 @@ shadow packages with an unrelated interpreter's site-packages.
 ### End-to-end (installed plugin)
 
 ```bash
-# 1. Run the backend directly (bypasses VLC)
-~/.local/share/vlc-ai-subs/venv/bin/python3 \
-  ~/.local/share/vlc-ai-subs/aisubs_whisper.py \
+# 1. Run the backend directly (bypasses VLC). The CLI is stdlib-only, so any
+#    python3 works — install.sh does not create a CLI venv of its own.
+python3 ~/.local/share/vlc-ai-subs/aisubs_whisper.py \
   /path/to/video.mp4 recommended auto translate
 
 # 2. Check the .srt file written next to the video
@@ -183,13 +261,20 @@ Debug lines are also mirrored to stderr, so they appear in VLC's own logs
 (`vlc -vvv`). Failed WhisperX runs additionally include the stderr tail and
 stdout's last JSONL line in the emitted error — no more silent failures.
 
+The CLI also writes its PID to `<mirror>.pid` while it runs (removed on exit):
+that is how the extension's **Cancel** button stops a run — it signals the PID,
+and the CLI's handler then terminates the model subprocess (`core/procs.py`).
+The extension removes the mirror, the temp SRT and the pid file afterwards.
+
 ## Options
 
-- **Engine** — WhisperX (multilingual, word-aligned; default) or Parakeet (English, fastest).
+- **Engine** — Auto (default: Parakeet for English transcriptions, else NVIDIA→WhisperX / AMD-Intel→whisper.cpp), WhisperX (multilingual, word-aligned), Parakeet (English, fastest) or whisper.cpp (Vulkan — AMD/Intel GPUs).
 - **Model** — `Recommended (auto)` (VRAM-aware) or `tiny` / `base` / `small` / `medium` / `large` / `large-v3-turbo`.
-- **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, etc.
+- **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, `en-US`, etc.
 - **Task** — `Translate to English` (default) or `Transcribe (same language)`.
 - **Mode** — `Generate & Load SRT` (default) or `Real-time OSD`.
+- **Cancel** — stops the run (its process tree, including the model subprocess); starting a new run cancels the previous one.
+- **Remembered settings** — engine/model/language/task/mode are stored in `<vlc user data dir>/vlc-ai-subs/settings.conf` and restored next session; the details pane shows the engine, model, elapsed, ETA and cue count, plus the latest transcribed cue.
 
 ## Manual Installation
 
@@ -199,6 +284,14 @@ If the setup script doesn't work for your system:
    ```bash
    uv venv --python 3.12 venv-whisperx
    uv pip install --python venv-whisperx/bin/python whisperx
+   ```
+   The default engine and the SRT path are now complete. For the optional
+   engines/models:
+   ```bash
+   uv pip install --python venv-whisperx/bin/python sherpa-onnx  # Parakeet runtime
+   bash install-parakeet-model.sh                                # Parakeet model (~0.7 GB)
+   bash install-nllb-model.sh                                    # translate cascade (~1.3 GB)
+   bash install-whisper-cpp.sh small                             # Vulkan engine (AMD/Intel/NVIDIA)
    ```
 2. Copy `aisubs.lua` to your VLC extensions folder:
    - **Linux**: `~/.local/share/vlc/lua/extensions/`
@@ -212,6 +305,8 @@ If the setup script doesn't work for your system:
 - [voidrlm/vlc-ai-subs](https://github.com/voidrlm/vlc-ai-subs) — original VLC plugin (Lua extension)
 - [m-bain/whisperX](https://github.com/m-bain/whisperX) — word-level forced alignment
 - [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) — CTranslate2 Whisper
+- [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) — Vulkan (AMD/Intel/NVIDIA) + CPU Whisper runtime
+- [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Parakeet TDT inference
 
 ## License
 
@@ -220,8 +315,10 @@ with its own license — checked per model card:
 
 | Model | License | Use in the plugin |
 |---|---|---|
-| faster-whisper / WhisperX | MIT | default engine (multilingual, word-aligned) |
+| faster-whisper (MIT) / WhisperX (BSD-2-Clause) | MIT + BSD-2 | default engine (multilingual, word-aligned) |
 | Parakeet-TDT-0.6B-v2 | CC-BY-4.0 (commercial OK) | English ASR engine |
+| whisper.cpp + ggml models | MIT | Vulkan (AMD/Intel/NVIDIA) + CPU engine |
+| sherpa-onnx | Apache-2.0 | Parakeet inference runtime |
 | NLLB-200 (translate cascade, default) | **CC-BY-NC-4.0** | personal / non-commercial |
 | M2M-100 1.2B (translate cascade, optional) | **MIT** | commercial use |
 

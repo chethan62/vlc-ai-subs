@@ -88,6 +88,27 @@ else
     fi
 fi
 
+# ── 3b. whisper.cpp (Vulkan) — the AMD/Intel GPU path ──
+# Only WhisperX accelerates on NVIDIA CUDA (faster-whisper has no ROCm backend),
+# so GPUs from AMD/Intel get acceleration through whisper.cpp's vendor-neutral
+# Vulkan backend instead. Installed automatically when no NVIDIA GPU is present;
+# opt in on an NVIDIA box with VSCL_AISUBS_WHISPERCPP=1, opt out anywhere with
+# VSCL_AISUBS_SKIP_WHISPERCPP=1 (the build takes a few minutes).
+if [ "${VSCL_AISUBS_SKIP_WHISPERCPP:-0}" = "1" ]; then
+    log "Skipping whisper.cpp (VSCL_AISUBS_SKIP_WHISPERCPP=1)"
+elif [ -x "$HOME/.local/share/whisper-cpp/whisper-cli" ]; then
+    ok "whisper.cpp already installed"
+elif [ "${VSCL_AISUBS_WHISPERCPP:-0}" = "1" ] || ! command -v nvidia-smi >/dev/null 2>&1; then
+    log "Installing whisper.cpp with Vulkan (AMD/Intel GPU support)..."
+    if bash "$SCRIPT_DIR/install-whisper-cpp.sh" small; then
+        ok "whisper.cpp ready (Vulkan)"
+    else
+        log "whisper.cpp build failed — GPU-less machines still work on CPU (retry: bash install-whisper-cpp.sh)"
+    fi
+else
+    log "NVIDIA GPU detected — skipping whisper.cpp (VSCL_AISUBS_WHISPERCPP=1 adds the Vulkan engine)"
+fi
+
 # ── 4. Sync plugin files ──
 log "Syncing plugin files..."
 mkdir -p "$INSTALL_DIR" "$EXT_DIR"
@@ -97,8 +118,11 @@ cp "$SCRIPT_DIR/aisubs_whisper.py" "$INSTALL_DIR/"  2>/dev/null || true
 cp "$SCRIPT_DIR/whisperx_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/nllb_translate.py" "$INSTALL_DIR/"   2>/dev/null || true
 cp "$SCRIPT_DIR/parakeet_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/whispercpp_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-parakeet-model.sh" "$INSTALL_DIR/" 2>/dev/null || true
-cp "$SCRIPT_DIR/install-nllb-model.sh" "$INSTALL_DIR/"     2>/dev/null || true
+cp "$SCRIPT_DIR/install-whisper-cpp.sh" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/install-nllb-model.sh"      "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/install-m2m-model.sh"       "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/aisubs.lua" "$EXT_DIR/"             2>/dev/null || true
 ok "Plugin files synced"
 

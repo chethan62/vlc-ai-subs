@@ -1,13 +1,19 @@
 """
-Backend registry — WhisperX is the default engine.
+Backend registry — picks the transcription engine for this machine.
 
-WhisperX (https://github.com/m-bain/whisperX) provides word-level aligned
-timestamps (ideal for movie subtitles) in its own Python 3.12 venv
-(whisperX requires <3.14); see whisperx_backend.py.
+Engines
+  whisperx     WhisperX: multilingual, wav2vec2-aligned (NVIDIA CUDA only —
+               faster-whisper/CTranslate2 has no ROCm backend, so AMD/Intel
+               fall back to CPU here).
+  parakeet     NVIDIA Parakeet-TDT-0.6B-v2 via sherpa-onnx (English, fastest).
+  whispercpp   whisper.cpp: the Vulkan path that accelerates on AMD and Intel
+               GPUs as well as NVIDIA, with a CPU fallback.
 
-Optional engine — `VSCL_AISUBS_BACKEND=parakeet`: NVIDIA Parakeet-TDT-0.6B-v2
-via sherpa-onnx (English-only, native word timestamps, ~10x faster, CC-BY-4.0).
-WhisperX remains the fallback for non-English/translate.
+Selection
+  VSCL_AISUBS_BACKEND unset / "auto" → hardware policy (see _auto_backend)
+  VSCL_AISUBS_BACKEND=whisperx|parakeet|whispercpp → that engine (error if absent)
+  legacy values (moonshine, ...) → WhisperX; "whisper_cpp" is an alias for the
+  new whispercpp engine.
 """
 
 import logging
@@ -15,48 +21,80 @@ import os
 
 logger = logging.getLogger(__name__)
 
+from core.gpu import nvidia_gpu, vulkan_gpu_driver, vulkan_icds
+
 _ENGINES = {
+    "whisperx": ("backends.whisperx_backend", "WhisperXBackend", "WhisperX"),
     "parakeet": ("backends.parakeet", "ParakeetBackend", "Parakeet"),
+    "whispercpp": ("backends.whispercpp", "WhisperCppBackend", "whisper.cpp"),
 }
+
+_INSTALL_HINT = {
+    "whisperx": (
+        "uv venv --python 3.12 ~/.local/share/vlc-ai-subs/venv-whisperx && "
+        "uv pip install --python ~/.local/share/vlc-ai-subs/venv-whisperx/bin/python whisperx"
+    ),
+    "parakeet": (
+        "./install-parakeet-model.sh && uv pip install --python "
+        "~/.local/share/vlc-ai-subs/venv-whisperx/bin/python sherpa-onnx"
+    ),
+    "whispercpp": "./install-whisper-cpp.sh",
+}
+
+# Pre-fork engine names still found in the wild / in old docs.
+_ALIASES = {"whisper_cpp": "whispercpp"}
 
 
 from backends.base import TranscriptionBackend
 
 
-def resolve_backend() -> TranscriptionBackend:
-    """Return the WhisperX backend (default), or the parakeet opt-in."""
-    forced = os.environ.get("VSCL_AISUBS_BACKEND", "").strip().lower()
-
-    if forced in _ENGINES:
-        mod_name, cls_name, label = _ENGINES[forced]
-        try:
-            import importlib
-            mod = importlib.import_module(mod_name)
-            be = getattr(mod, cls_name).detect()
-            if be:
-                return be
-        except Exception as exc:
-            logger.debug("%s: %s", label, exc)
-        raise RuntimeError(
-            f"{label} backend is not available. Install it with: "
-            f"./install-parakeet-model.sh "
-            f"&& uv pip install --python ~/.local/share/vlc-ai-subs/venv-whisperx/bin/python sherpa-onnx"
-        )
-
-    # Default + any legacy/unknown env value → WhisperX
-    from backends.whisperx_backend import WhisperXBackend
-
+def _load_engine(name: str) -> TranscriptionBackend:
+    """Import the engine and return an instance, or raise with its fix."""
+    mod_name, cls_name, label = _ENGINES[name]
     try:
-        be = WhisperXBackend.detect()
-    except Exception as exc:
-        logger.debug("whisperx: %s", exc)
-        be = None
-    if be:
-        return be
+        import importlib
 
+        module = importlib.import_module(mod_name)
+        backend = getattr(module, cls_name).detect()
+        if backend:
+            return backend
+    except Exception as exc:  # noqa: BLE001 — any import/detect failure = absent
+        logger.debug("%s: %s", label, exc)
     raise RuntimeError(
-        "WhisperX is not available. Install it with:\n"
-        "  uv venv --python 3.12 ~/.local/share/vlc-ai-subs/venv-whisperx\n"
-        "  uv pip install --python ~/.local/share/vlc-ai-subs/venv-whisperx/bin/python whisperx\n"
-        "or re-run ./install.sh"
+        f"{label} backend is not available. Install it with:\n  {_INSTALL_HINT[name]}"
     )
+
+
+def _auto_backend() -> TranscriptionBackend:
+    """Hardware policy for VSCL_AISUBS_BACKEND unset/auto.
+
+    NVIDIA → WhisperX: its CUDA path (int8_float16 + wav2vec2 alignment) beats
+    the Vulkan alternative in quality and is the better-supported stack.
+    No NVIDIA but a Vulkan driver → whisper.cpp, which is how AMD and Intel
+    GPUs get GPU acceleration at all.
+    Nothing usable → WhisperX (CPU), preserving the previous default.
+    """
+    if nvidia_gpu():
+        return _load_engine("whisperx")
+    driver = vulkan_gpu_driver()
+    if vulkan_icds():
+        try:
+            backend = _load_engine("whispercpp")
+            logger.debug("auto: Vulkan (%s) → whisper.cpp", driver or "unknown")
+            return backend
+        except RuntimeError as exc:
+            logger.debug("auto: Vulkan present but whisper.cpp unusable (%s)", exc)
+    return _load_engine("whisperx")
+
+
+def resolve_backend() -> TranscriptionBackend:
+    """Return the engine for VSCL_AISUBS_BACKEND (default: auto policy)."""
+    forced = os.environ.get("VSCL_AISUBS_BACKEND", "").strip().lower()
+    forced = _ALIASES.get(forced, forced)
+    if forced in ("", "auto"):
+        return _auto_backend()
+    if forced in _ENGINES:
+        return _load_engine(forced)
+
+    # Unknown/legacy value → WhisperX, as before.
+    return _load_engine("whisperx")
