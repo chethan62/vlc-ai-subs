@@ -1,7 +1,7 @@
 MIT License
 
 Copyright (c) 2026 voidrlm
-Copyright (c) 2026 chethan62 (Vulkan/GPU backends, multi-engine architecture, sherpa-onnx, WhisperX)
+Copyright (c) 2026 chethan62 (multi-engine architecture, Vulkan/AMD-Intel backend, Parakeet v2/v3 multilingual support, dialog UI, cue quality, cancellation)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

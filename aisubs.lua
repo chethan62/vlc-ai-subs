@@ -4,7 +4,18 @@ vlc-ai-subs — VLC extension for AI-powered subtitle generation.
 Compatible with VLC 3.x. VLC 4.x uses the same Lua API (verified against VLC
 master on 2026-09-15); no 4.0 build has been run against it yet.
 
-Engines: Auto (Parakeet for English, WhisperX otherwise) / WhisperX / Parakeet.
+Engines: Auto (fastest engine covering the language: Parakeet v2/v3, else the
+hardware policy) / WhisperX / Parakeet / whisper.cpp (Vulkan).
+
+Credits — full list and licenses in the README:
+  original plugin  voidrlm/vlc-ai-subs (the fork base)
+  ASR              WhisperX (BSD-2), faster-whisper + CTranslate2 (MIT),
+                   Parakeet-TDT v2/v3 (© NVIDIA, CC-BY-4.0, ONNX conversions
+                   by k2-fsa) via sherpa-onnx (Apache-2.0), whisper.cpp (MIT)
+  translate        NLLB-200 (CC-BY-NC-4.0) or M2M-100 (MIT), both Meta AI
+  audio / host     FFmpeg; VLC by VideoLAN (Lua extension API)
+Models and runtimes are downloaded at install time — nothing third-party is
+vendored here. Plugin code: MIT (see LICENSE).
 
 Two modes (Generate & Load is the dialog default):
   1. Generate & Load — full SRT is created next to the media, then loaded synced to playback

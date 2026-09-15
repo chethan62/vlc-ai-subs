@@ -2,6 +2,12 @@
 """
 vlc-ai-subs — Whisper transcription backend for VLC.
 
+Engines: WhisperX (default) · Parakeet-TDT v2/v3 via sherpa-onnx · whisper.cpp
+(Vulkan). Plugin code is MIT (see LICENSE); models and runtimes are downloaded at
+install time and keep their own licenses — the full list is in the README's
+Credits section (Parakeet is CC-BY-4.0, © NVIDIA, ONNX conversion by k2-fsa;
+sherpa-onnx is Apache-2.0).
+
 Architecture
 ────────────
   aisubs_whisper.py        CLI entry-point (you are here)

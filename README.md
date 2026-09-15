@@ -371,11 +371,40 @@ If the setup script doesn't work for your system:
 
 ## Credits
 
-- [voidrlm/vlc-ai-subs](https://github.com/voidrlm/vlc-ai-subs) — original VLC plugin (Lua extension)
+**Original plugin** — this fork extends someone else's work:
+
+- [voidrlm/vlc-ai-subs](https://github.com/voidrlm/vlc-ai-subs) — the original VLC plugin (Lua extension)
+
+**Host and audio:**
+
+- [VideoLAN — VLC](https://www.videolan.org/vlc/) ([source](https://code.videolan.org/videolan/vlc)) — the player and its Lua extension API
+- [FFmpeg](https://ffmpeg.org/) — audio decoding to 16 kHz mono
+
+**Speech recognition:**
+
+- [OpenAI Whisper](https://github.com/openai/whisper) — the model family every engine here runs
 - [m-bain/whisperX](https://github.com/m-bain/whisperX) — word-level forced alignment
-- [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) — CTranslate2 Whisper
-- [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) — Vulkan (AMD/Intel/NVIDIA) + CPU Whisper runtime
-- [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Parakeet TDT inference
+- [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) with [OpenNMT/CTranslate2](https://github.com/OpenNMT/CTranslate2) — the WhisperX inference stack
+- [wav2vec 2.0](https://github.com/facebookresearch/fairseq/tree/main/examples/wav2vec) (Meta AI) — the alignment models WhisperX aligns with
+- [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) — the Parakeet-TDT architecture behind `parakeet_runner.py`
+- [nvidia/parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) · [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) — the Parakeet models (CC-BY-4.0)
+- [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Parakeet inference, and the int8 ONNX conversions of both Parakeet models
+- [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) — the Vulkan (AMD/Intel/NVIDIA) and CPU Whisper runtime
+
+**Translation:**
+
+- [NLLB-200](https://github.com/facebookresearch/fairseq/tree/nllb) (Meta AI, CC-BY-NC-4.0) — the default translate cascade
+- [M2M-100](https://github.com/facebookresearch/fairseq/tree/main/examples/m2m_100) (Meta AI, MIT) — the commercial-friendly cascade
+
+**Models and data:**
+
+- [Hugging Face](https://huggingface.co/) — model hosting, and the [Open ASR leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard) that the WER figures quoted in this README come from
+
+Nothing third-party is vendored in this repo: models and runtimes are downloaded
+or pip-installed at install time, which is why attribution lives here and in the
+license table rather than in a NOTICE file. The two that actually *require* it —
+Parakeet (CC-BY-4.0, © NVIDIA, converted by the k2-fsa team) and sherpa-onnx
+(Apache-2.0, © Next-gen Kaldi) — are credited above.
 
 ## License
 
@@ -385,7 +414,8 @@ with its own license — checked per model card:
 | Model | License | Use in the plugin |
 |---|---|---|
 | faster-whisper (MIT) / WhisperX (BSD-2-Clause) | MIT + BSD-2 | default engine (multilingual, word-aligned) |
-| Parakeet-TDT-0.6B-v2 | CC-BY-4.0 (commercial OK) | English ASR engine |
+| OpenAI Whisper | MIT | the model family all engines run; the `translate` fallback |
+| Parakeet-TDT-0.6B v2 (English) / v3 (25 European languages) | **CC-BY-4.0** (commercial OK, attribution required) | Parakeet engine — © NVIDIA, ONNX conversion by [k2-fsa](https://github.com/k2-fsa/sherpa-onnx) |
 | whisper.cpp + ggml models | MIT | Vulkan (AMD/Intel/NVIDIA) + CPU engine |
 | sherpa-onnx | Apache-2.0 | Parakeet inference runtime |
 | NLLB-200 (translate cascade, default) | **CC-BY-NC-4.0** | personal / non-commercial |
