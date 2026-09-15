@@ -141,6 +141,19 @@ back to CPU when no device is present.
   completes.
 - The engine needs no Python ML packages — only ffmpeg and the binary — so it
   works even when `venv-whisperx` is absent.
+- Decode is hardened exactly as the WhisperX path is, in whisper.cpp's flags:
+  `-mc 0` (no cross-window context — this build has no `--no-context`), `-nf`
+  (no temperature fallback), `-bs 1` (beam 1) and `-sns`. With the defaults, a
+  real 5-minute excerpt invented text over music and applause — `music playing`
+  ×4, `applause`, `cheering`, `sighs`, and a **14-cue `I'm sorry.` repeat
+  loop** — and took 231 s; hardened it takes **127 s (1.8× faster)** with none
+  of those captions.
+- Repeat loops that survive are collapsed in `core/blocklist.py`, which also
+  folds a repeated phrase inside one cue. The threshold is calibrated against
+  both real cases from this same episode: the loop ran to 14, while Parakeet —
+  which does not loop — heard `Go, go, go, go, go!` and `Come on, come on, come
+  on, come on.` as genuine dialogue. **Only runs of 7 or more collapse**, so real
+  shouting is never eaten.
 - Measured on this repo's dev box (a power-capped GTX 1650, so the gain here is
   a floor): **60 s clip, `small` → 22.9 s on Vulkan vs 32.8 s on CPU**.
   `VSCL_AISUBS_DEVICE=cpu` forces `-ng` (no GPU) for a comparison.
