@@ -116,17 +116,20 @@ def _recommend_model(backend_name: str = "whisperx") -> str:
     return "base"
 
 
-def resolve_model_name(model_name: str, backend_name: str, backend=None) -> str:
+def resolve_model_name(
+    model_name: str, backend_name: str, backend=None, language: str | None = None
+) -> str:
     """Map the dialog's model choice to the model that will actually run.
 
     An engine that ignores the dialog's pick reports its own label through
-    ``TranscriptionBackend.model_label()`` (Parakeet: one fixed model;
-    whisper.cpp: an installed ggml file) — without that, status lines named
-    models that were not running (e.g. "parakeet — large-v3-turbo"). Otherwise
-    "recommended" is sized from VRAM/RAM and explicit picks pass through.
+    ``TranscriptionBackend.model_label()`` (Parakeet: an installed variant that
+    depends on the language; whisper.cpp: an installed ggml file) — without
+    that, status lines named models that were not running (e.g.
+    "parakeet — large-v3-turbo"). Otherwise "recommended" is sized from
+    VRAM/RAM and explicit picks pass through.
     """
     if backend is not None:
-        label = backend.model_label(model_name)
+        label = backend.model_label(model_name, language)
         if label:
             return label
     if model_name == "recommended":
@@ -184,6 +187,34 @@ def _install_cancel_handler() -> None:
 
 # ── CLI entry-point ──────────────────────────────────────────────────────
 
+def auto_engine_for(language: str | None, task: str = "transcribe") -> str:
+    """Engine for ``VSCL_AISUBS_BACKEND`` unset/auto: "parakeet" or "auto".
+
+    Auto prefers Parakeet when an installed variant covers the requested
+    language — English uses the v2 model, v3's 25 European languages use v3 —
+    because it is ~10x faster with better English WER than WhisperX. Everything
+    else (translate, which Parakeet cannot do; an unsupported language; no model
+    installed) falls through to the hardware policy in
+    ``backends.resolve_backend("auto")``: NVIDIA → WhisperX, Vulkan-only →
+    whisper.cpp, otherwise CPU.
+
+    The dialog mirrors this rule in aisubs.lua's engine_for() so its engine
+    preview is truthful before the run starts; core/parakeet_models.py is the
+    single source for which languages are installed.
+    """
+    from core.parakeet_models import normalize_language, supported_languages
+
+    if task == "translate":
+        return "auto"
+    installed = supported_languages()
+    if not installed:
+        return "auto"
+    wanted = normalize_language(language)
+    if wanted is None or wanted in installed:
+        return "parakeet"
+    return "auto"
+
+
 def main():
     _t0 = time.time()
     # --debug may appear anywhere; capture BEFORE stripping, then remove it
@@ -227,7 +258,22 @@ def main():
         sys.exit(1)
 
     try:
-        backend = resolve_backend()
+        requested_backend = os.environ.get("VSCL_AISUBS_BACKEND", "").strip() or "auto"
+        if requested_backend == "auto":
+            pick = auto_engine_for(language, task)
+            try:
+                backend = resolve_backend(pick)
+            except RuntimeError as exc:
+                if pick == "auto":
+                    raise
+                # Parakeet model present but its runtime is unusable (sherpa-onnx
+                # missing, venv gone) — the hardware policy still works, so a
+                # broken optional engine must not fail the whole run.
+                if debug:
+                    _log_debug(f"auto: Parakeet unusable ({exc}); falling back to the hardware policy")
+                backend = resolve_backend("auto")
+        else:
+            backend = resolve_backend(requested_backend)
     except RuntimeError as exc:
         emitter.emit({"type": "error", "msg": str(exc)})
         emitter.close()
@@ -236,7 +282,7 @@ def main():
         _log_debug(f"backend resolved: {backend.name()} ({time.time() - _t0:.1f}s)")
 
     # Resolve the dialog's pick → the model that will actually run
-    resolved = resolve_model_name(model_name, backend.name(), backend)
+    resolved = resolve_model_name(model_name, backend.name(), backend, language)
     if debug and resolved != model_name:
         _log_debug(
             f"model: {model_name} -> {resolved} "

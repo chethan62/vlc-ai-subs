@@ -87,9 +87,15 @@ def _auto_backend() -> TranscriptionBackend:
     return _load_engine("whisperx")
 
 
-def resolve_backend() -> TranscriptionBackend:
-    """Return the engine for VSCL_AISUBS_BACKEND (default: auto policy)."""
-    forced = os.environ.get("VSCL_AISUBS_BACKEND", "").strip().lower()
+def resolve_backend(name: str | None = None) -> TranscriptionBackend:
+    """Return the engine for `name`, or for VSCL_AISUBS_BACKEND when None.
+
+    `name` lets the CLI pass the engine it already resolved (the dialog's
+    language rule can pick "parakeet" before the hardware policy is consulted);
+    omitting it keeps the env-var behaviour.
+    """
+    forced = (name if name is not None else os.environ.get("VSCL_AISUBS_BACKEND", ""))
+    forced = forced.strip().lower()
     forced = _ALIASES.get(forced, forced)
     if forced in ("", "auto"):
         return _auto_backend()

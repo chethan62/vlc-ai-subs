@@ -12,6 +12,7 @@ CC-BY-4.0, transducer = no hallucination loops.
 import os
 from typing import Iterable
 
+from core.parakeet_models import model_label as parakeet_model_label
 from core.procs import run_captured
 from core.timeouts import resolve_timeout
 
@@ -21,10 +22,10 @@ _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _RUNNER = os.path.join(_BASE, "parakeet_runner.py")
 _VENV = os.path.join(_BASE, "venv-whisperx")
 
-# The one model this backend runs. The runner ignores the <model> arg, so the
-# CLI reports this instead of the dialog's pick (see aisubs_whisper.resolve_model_name);
-# parakeet_runner.MODEL_NAME must stay identical (pinned by a test).
-MODEL_NAME = "parakeet-tdt-0.6b-v2"
+# The engines this backend can run (English v2 / 25-language v3). The runner
+# picks the variant from what is installed; the label therefore comes from
+# core/parakeet_models.py so it can never disagree with the runner's own
+# status line (see parakeet_runner.py, which imports the same module).
 
 if not (os.path.isfile(_RUNNER) and os.path.isdir(_VENV)):
     _SHARE = os.path.expanduser("~/.local/share/vlc-ai-subs")
@@ -103,8 +104,13 @@ class ParakeetBackend(TranscriptionBackend):
                 _sys.stderr.write(f"[parakeet] {obj.get('msg', '')}\n")
 
     def name(self) -> str:
-        return "parakeet (en, fast)"
+        return "parakeet (fast)"
 
-    def model_label(self, requested: str) -> str | None:
-        """Parakeet runs one fixed model — the <model> arg is ignored."""
-        return MODEL_NAME
+    def model_label(self, requested: str, language: str | None = None) -> str | None:
+        """Parakeet ignores the <model> arg — it runs an installed variant.
+
+        The label comes from core/parakeet_models.py, shared with the runner, so
+        the CLI's status line and the runner's own status line agree. `language`
+        selects the variant: English → v2, other languages → v3.
+        """
+        return parakeet_model_label(language)

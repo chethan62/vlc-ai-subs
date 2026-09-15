@@ -12,8 +12,8 @@ or real-time on-screen captions.
 |---|---|
 | **Zero-config** | "Recommended (auto)" model + Auto engine + Translate to English by default — open a video, click Generate, done |
 | **Word-level timing** | WhisperX wav2vec2 alignment on CUDA, or Parakeet's native TDT word timestamps (CPU too) |
-| **Three engines** | WhisperX (multilingual, word-aligned), Parakeet (English, ~10× faster) or whisper.cpp (Vulkan) |
-| **Auto engine** | Auto (default) picks Parakeet for English transcriptions, else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) |
+| **Three engines** | WhisperX (multilingual, word-aligned), Parakeet (English + 25 European languages, ~10× faster) or whisper.cpp (Vulkan) |
+| **Auto engine** | Auto (default) picks the fastest engine that covers the language (Parakeet v2/v3), else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) / CPU |
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
 | **Two modes** | Generate & Load SRT (default) or OSD captions (Real-time OSD — each cue is pushed to the OSD as it is produced) |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
@@ -37,7 +37,8 @@ cd vlc-ai-subs
 `install.sh` is the full installer (WhisperX + Parakeet + NLLB translate
 models + whisper.cpp/Vulkan on machines without an NVIDIA GPU + ffmpeg check +
 VLC extension sync; NLLB is skippable via
-`VSCL_AISUBS_SKIP_NLLB=1`, whisper.cpp via `VSCL_AISUBS_SKIP_WHISPERCPP=1`).
+`VSCL_AISUBS_SKIP_NLLB=1`, whisper.cpp via `VSCL_AISUBS_SKIP_WHISPERCPP=1`,
+and `VSCL_AISUBS_PARAKEET_V3=1` adds Parakeet's multilingual v3 model).
 `setup.sh` is the minimal WhisperX-only
 variant (no Parakeet, no NLLB, no whisper.cpp, no ffmpeg check).
 
@@ -69,23 +70,37 @@ Then:
 | Engine | Languages | Word timing | Speed | License |
 |---|---|---|---|---|
 | **WhisperX** (default) | 99 (faster-whisper + wav2vec2 alignment) | wav2vec2 forced alignment | ~2–4× realtime (medium, GPU-dependent) | BSD-2 + MIT |
-| **Parakeet** (opt-in: `VSCL_AISUBS_BACKEND=parakeet`) | English only | **native TDT word timestamps** (no aligner) | **~10× faster, CPU-friendly** | CC-BY-4.0 |
+| **Parakeet** (opt-in: `VSCL_AISUBS_BACKEND=parakeet`) | English (v2) or 25 European languages (v3) | **native TDT word timestamps** (no aligner) | **~10× faster, CPU-friendly** | CC-BY-4.0 |
 | **whisper.cpp** (Vulkan: AMD/Intel too) | 99 (whisper.cpp / ggml) | segment-level (no aligner) | GPU via Vulkan, CPU fallback | MIT |
 
 Pick **Parakeet** in the dialog for English films — self-reported mean WER
 6.05% on the HF Open-ASR leaderboard (independent 2026 evals put
 whisper-large-v3 at 7.44% on a comparable English eval), ~0.7 GB int8 model,
 and its transducer decoder structurally avoids the hallucination loops
-Whisper hits on music/silence. WhisperX handles non-English and translate.
+Whisper hits on music/silence.
 
-**Auto (the default)** behaves like the recommendation: it runs Parakeet for an
-English transcription (`language: en`) and otherwise applies the hardware
-policy — NVIDIA → WhisperX, a Vulkan-only GPU (AMD/Intel) → whisper.cpp,
-nothing usable → WhisperX on CPU. Translation always needs WhisperX (Parakeet
-cannot translate), and Parakeet has no language detection, so `auto` language
-stays off it. Choosing Parakeet explicitly with translate or a non-English
-language falls back to WhisperX with a note in the status line instead of
-failing the run.
+Two variants, same 0.6B TDT architecture and the same native word timestamps:
+
+| Variant | Languages | Size | Install |
+|---|---|---|---|
+| **v2** (default) | English — the English-specialised model | ~0.7 GB | `./install-parakeet-model.sh` |
+| **v3** | 25 European languages — bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro sk sl es sv ru uk | ~0.64 GB | `./install-parakeet-model.sh v3` |
+
+Both can be installed side by side, and the language decides which one runs:
+English keeps using v2, anything else uses v3 (no language flag is needed —
+k2-fsa's ONNX conversion handles the multilingual prompt internally).
+`VSCL_AISUBS_PARAKEET_V3=1 ./install.sh` installs v3 as well,
+`VSCL_AISUBS_PARAKEET_VERSION=v2|v3` forces one variant, and
+`VSCL_AISUBS_PARAKEET_MODEL=<dir>` points at a model directory of your own.
+
+**Auto (the default)** picks the fastest engine that covers the language: an
+installed Parakeet that supports it — English → v2, the other 24 → v3 — wins
+over the hardware policy (NVIDIA → WhisperX, a Vulkan-only GPU (AMD/Intel) →
+whisper.cpp, nothing usable → WhisperX on CPU). Translation always needs
+WhisperX (Parakeet has no translation head), and a language that no installed
+variant covers stays off Parakeet. Choosing Parakeet explicitly with translate
+or an uncovered language falls back to WhisperX with a note in the status line
+instead of failing the run.
 
 ### AMD / Intel GPUs (Vulkan)
 
@@ -169,6 +184,9 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_TIMEOUT` | seconds (`0` = no limit) | 4 h transcribe / 6 h translate | backend subprocess ceiling (long films) |
 | `VSCL_AISUBS_MAX_LINE` | characters (min 8) | 42 (20 for CJK) | cue line width |
 | `VSCL_AISUBS_WHISPERCPP_BIN` | path to `whisper-cli` | auto-detected | whisper.cpp engine |
+| `VSCL_AISUBS_PARAKEET_V3` | `1` | `0` | `install.sh` only: also install the multilingual v3 model |
+| `VSCL_AISUBS_PARAKEET_VERSION` | `v2` \| `v3` | auto (by language) | Parakeet: force one model |
+| `VSCL_AISUBS_PARAKEET_MODEL` | directory | auto-detected | Parakeet: use this model directory |
 | `VSCL_AISUBS_WHISPERCPP_MODEL` | path to a `ggml-*.bin` | best installed | whisper.cpp engine |
 | `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
@@ -189,13 +207,14 @@ core/
   blocklist.py               hallucination-phrase filter (VSCL_AISUBS_BLOCKLIST)
   audio.py                   ffmpeg decode to 16 kHz mono wav
   gpu.py                     NVIDIA/Vulkan capability probes (engine choice)
+  parakeet_models.py         Parakeet v2/v3 variants: installed models, language sets
   procs.py                   live-child registry (cancellation)
   timeouts.py                backend subprocess ceilings (VSCL_AISUBS_TIMEOUT)
 backends/
   base.py                    TranscriptionBackend ABC
   whisperx_backend.py        WhisperX (Python 3.12 subprocess, PYTHONPATH-cleaned)
-  parakeet.py                Parakeet (sherpa-onnx, English, CPU)
-  whispercpp.py              whisper.cpp (Vulkan-capable, no Python ML deps)
+  parakeet.py                Parakeet (sherpa-onnx, v2 English / v3 multilingual)
+  whispercpp.py              whisper.cpp (Vulkan: AMD/Intel/NVIDIA, or CPU)
 ```
 
 **JSONL contract (stdout):** `{"type":"status","msg":...}`, `{"type":"sub","i":N,"start":S,"end":E,"text":...}`, `{"type":"done","segments":N,"srt_path":...}`, `{"type":"error","msg":...}`. Lua polls the mirror file (argv[5]) for progress.
@@ -207,7 +226,7 @@ backends/
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 147 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 175 tests (model-free)
 ```
 
 Coverage: SRT formatting (float-drift-safe rounding, rollover, clamp),
@@ -215,7 +234,9 @@ cue wrapping + timing cleanup (word-boundary/balanced/CJK, min duration/gap),
 JSONL emitter + mirror file, VRAM/RAM model recommendation (boundary cases),
 backend resolution (WhisperX default, Parakeet opt-in, whisper.cpp + its
 `whisper_cpp` alias, the auto hardware policy, missing-backend errors),
-runner CLI errors, Parakeet token-merge + cue grouping, whisper.cpp argv/JSON
+Parakeet v2/v3 variant selection (language sets, forced version, relocated
+model directories) + the auto engine's language rule, runner CLI errors,
+Parakeet token-merge + cue grouping, whisper.cpp argv/JSON
 (ms→s) parsing + model resolution, NLLB/M2M batch
 translation + language-map fallback, hallucination-blocklist matching,
 backend subprocess timeouts + cancellable children (real processes), model-name
@@ -268,7 +289,7 @@ The extension removes the mirror, the temp SRT and the pid file afterwards.
 
 ## Options
 
-- **Engine** — Auto (default: Parakeet for English transcriptions, else NVIDIA→WhisperX / AMD-Intel→whisper.cpp), WhisperX (multilingual, word-aligned), Parakeet (English, fastest) or whisper.cpp (Vulkan — AMD/Intel GPUs).
+- **Engine** — Auto (default: the fastest engine that covers the language), WhisperX (multilingual, word-aligned), Parakeet (fastest — v2 for English, v3 for 25 European languages) or whisper.cpp (Vulkan — AMD/Intel GPUs).
 - **Model** — `Recommended (auto)` (VRAM-aware) or `tiny` / `base` / `small` / `medium` / `large` / `large-v3-turbo`.
 - **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, `en-US`, etc.
 - **Task** — `Translate to English` (default) or `Transcribe (same language)`.

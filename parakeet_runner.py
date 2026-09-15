@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
 Parakeet runner — invoked by the plugin as a subprocess inside the Python
-3.12 venv (sherpa-onnx). English-only, NVIDIA Parakeet-TDT-0.6B-v2 int8.
+3.12 venv (sherpa-onnx). NVIDIA Parakeet-TDT-0.6B, int8 ONNX.
 
-Why (2026-08 research): native word-level timestamps (no aligner step),
-WER 6.05% self-reported (whisper-large-v3 7.44% on a comparable English
-eval), ~10x faster, ~0.7GB int8, CC-BY-4.0, transducer blanking = no
-hallucination loops on music.
+Two variants, same architecture (native word timestamps, transducer blanking =
+no hallucination loops on music/silence), same four file names:
+  v2  English only, WER 6.05% self-reported (whisper-large-v3 7.44% on a
+      comparable English eval), ~0.7 GB.
+  v3  25 European languages, ~0.64 GB, no language flag needed — k2-fsa's
+      ONNX conversion handles the multilingual prompt internally.
+Both CC-BY-4.0. English prefers v2 when it is installed (English-specialised);
+anything else uses v3. See select_variant().
 
 Contract (stdout, JSONL) — same as whisperx_runner:
   {"type": "status", "msg": "..."}
@@ -15,8 +19,9 @@ Contract (stdout, JSONL) — same as whisperx_runner:
   {"type": "error", "msg": "..."}
 
 Args:  <media> <model> <language> <task> [mirror_file] [srt_path]
-The <model> arg is ignored (fixed parakeet-tdt-0.6b-v2). English-only:
-translate or non-"en" language → actionable error, callers fall back.
+The <model> arg is ignored (the variant is picked from what is installed or
+from VSCL_AISUBS_PARAKEET_VERSION / VSCL_AISUBS_PARAKEET_MODEL). translate, or
+a language no installed variant covers → actionable error, callers fall back.
 The SRT file is written ONLY when [srt_path] is given — the plugin's caller
 (aisubs_whisper.py) owns SRT output, so the runner never creates side-effect
 files next to the media (realtime-OSD mode, read-only media dirs).
@@ -37,9 +42,16 @@ from core.srt import write_srt
 if TYPE_CHECKING:
     import numpy as np
 
-MODEL_NAME = "parakeet-tdt-0.6b-v2"
-MODEL_DIR = os.path.expanduser(
-    "~/.local/share/sherpa-onnx/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+# Model variants, language sets and selection live in a leaf module shared with
+# backends/parakeet.py (status-line labels) — see core/parakeet_models.py.
+from core.parakeet_models import (  # noqa: E402
+    INSTALL_HINT,
+    KNOWN_LANGUAGES,
+    MODEL_FILES,
+    V3_LANGUAGES,
+    normalize_language,
+    select_variant,
+    variant_dir,
 )
 
 
@@ -124,33 +136,45 @@ def main():
         sys.exit(1)
 
     media_path = sys.argv[1]
-    language = sys.argv[3] if sys.argv[3] != "auto" else None
+    language = normalize_language(sys.argv[3])
     task = sys.argv[4]
     srt_requested = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6].strip() else None
 
     if task == "translate":
-        emit({"type": "error", "msg": "Parakeet is English-only (no translation) — use WhisperX for translate."})
+        emit({"type": "error", "msg": "Parakeet cannot translate (no translation head) — use WhisperX for translate."})
         sys.exit(1)
-    if language and language.lower() != "en":
-        emit({"type": "error", "msg": f"Parakeet supports English only (requested '{language}') — use WhisperX."})
+
+    variant = select_variant(language)
+    if variant is None:
+        forced = os.environ.get("VSCL_AISUBS_PARAKEET_VERSION", "").strip()
+        if language and language not in KNOWN_LANGUAGES:
+            emit({"type": "error", "msg": (
+                f"Parakeet does not support '{language}'. The multilingual v3 model "
+                f"({INSTALL_HINT}) adds: {', '.join(sorted(V3_LANGUAGES))} — otherwise use WhisperX."
+            )})
+        elif forced:
+            emit({"type": "error", "msg": (
+                f"VSCL_AISUBS_PARAKEET_VERSION={forced} but that model is not installed — run {INSTALL_HINT}"
+            )})
+        else:
+            needed = "" if language in (None, "en") else f" (v3 is required for '{language}')"
+            emit({"type": "error", "msg": f"Parakeet model not installed — run {INSTALL_HINT}{needed}"})
         sys.exit(1)
+
     if not os.path.isfile(media_path):
         emit({"type": "error", "msg": f"File not found: {media_path}"})
         sys.exit(1)
 
     enc, dec, joi, tok = (
-        os.path.join(MODEL_DIR, name)
-        for name in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
+        os.path.join(variant_dir(variant), name) for name in MODEL_FILES
     )
-    if not all(os.path.isfile(p) for p in (enc, dec, joi, tok)):
-        emit({"type": "error", "msg": "Parakeet model not installed — run ./install-parakeet-model.sh"})
-        sys.exit(1)
 
     import sherpa_onnx  # noqa: E402 — import lazily; heavy package
 
     t0 = time.time()
     num_threads = min(8, os.cpu_count() or 2)
-    emit({"type": "status", "msg": f"Parakeet: loading {MODEL_NAME} (CPU, int8, {num_threads} threads)..."})
+    langs = "" if len(variant.languages) == 1 else f", {len(variant.languages)} languages"
+    emit({"type": "status", "msg": f"Parakeet: loading {variant.label}{langs} (CPU, int8, {num_threads} threads)..."})
     rec = sherpa_onnx.OfflineRecognizer.from_transducer(
         encoder=enc, decoder=dec, joiner=joi, tokens=tok,
         num_threads=num_threads, provider="cpu",

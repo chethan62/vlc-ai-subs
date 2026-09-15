@@ -112,9 +112,10 @@ class WhisperCppBackend(TranscriptionBackend):
             return cls(binary)
         return None
 
-    def model_label(self, requested: str) -> str | None:
+    def model_label(self, requested: str, language: str | None = None) -> str | None:
         """Model that will really run: whisper.cpp resolves to an installed
-        ggml file (the dialog's WhisperX size names may not all be installed)."""
+        ggml file (the dialog's WhisperX size names may not all be installed).
+        The language is irrelevant — whisper.cpp uses one model per size."""
         if not self._binary:
             return None
         try:

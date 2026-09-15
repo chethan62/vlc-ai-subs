@@ -54,7 +54,7 @@ def test_backend_failure_emits_json_error_instead_of_traceback(monkeypatch, caps
     line with exit code 1 — never a raw Python traceback on stdout."""
     import aisubs_whisper
 
-    def boom():
+    def boom(*_args, **_kwargs):
         raise RuntimeError(
             "WhisperX is not available. Install it with:\n  uv venv --python 3.12 ..."
         )
@@ -82,8 +82,8 @@ class _FakeBackend:
     def name(self):
         return "fake"
 
-    def model_label(self, requested):
-        """No opinion → the CLI's VRAM/RAM picker decides (see base.py)."""
+    def model_label(self, requested, language=None):
+        """No opinion → the CLI's VRAM/RAM picker decides."""
         return None
 
     def transcribe(self, media_path, model_name, language, task):
@@ -97,7 +97,7 @@ def test_srt_write_failure_falls_back_to_temp(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(
         aisubs_whisper, "resolve_backend",
-        lambda: _FakeBackend([{"start": 0.0, "end": 1.0, "text": "Hi"}]),
+        lambda *_a, **_kw: _FakeBackend([{"start": 0.0, "end": 1.0, "text": "Hi"}]),
     )
     media = tmp_path / "ro.mp4"
     media.write_bytes(b"junk")
@@ -134,7 +134,7 @@ def test_srt_write_failure_both_paths_errors(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(
         aisubs_whisper, "resolve_backend",
-        lambda: _FakeBackend([{"start": 0.0, "end": 1.0, "text": "Hi"}]),
+        lambda *_a, **_kw: _FakeBackend([{"start": 0.0, "end": 1.0, "text": "Hi"}]),
     )
     media = tmp_path / "ro.mp4"
     media.write_bytes(b"junk")
@@ -174,21 +174,82 @@ def test_resolve_model_name_explicit_pick_is_passed_through():
 
 def test_resolve_model_name_uses_the_backend_label():
     """An engine that ignores the dialog's pick reports its own model — Parakeet
-    runs one fixed model, so a WhisperX name must never be reported."""
+    runs an installed variant, so a WhisperX name must never be reported."""
     import aisubs_whisper
-    from backends.parakeet import MODEL_NAME, ParakeetBackend
+    from backends.parakeet import ParakeetBackend
+    from core.parakeet_models import model_label
 
-    assert "parakeet" in MODEL_NAME
+    assert "parakeet" in model_label()
     backend = ParakeetBackend()
-    assert aisubs_whisper.resolve_model_name("recommended", backend.name(), backend) == MODEL_NAME
-    assert aisubs_whisper.resolve_model_name("large", backend.name(), backend) == MODEL_NAME
+    assert aisubs_whisper.resolve_model_name("recommended", backend.name(), backend) == model_label()
+    assert aisubs_whisper.resolve_model_name("large", backend.name(), backend) == model_label()
+
+
+def test_resolved_model_label_follows_the_language(monkeypatch, tmp_path):
+    """Parakeet's label is language-dependent: English runs v2, the other 24
+    languages run v3. A language-blind label printed "parakeet-tdt-0.6b-v2"
+    while the French run was actually loading v3."""
+    import aisubs_whisper
+    from backends.parakeet import ParakeetBackend
+    import core.parakeet_models as pm
+
+    root = tmp_path / "models"
+    for tag in ("v2", "v3"):
+        variant = next(v for v in pm.VARIANTS if v.tag == tag)
+        d = root / variant.dirname
+        d.mkdir(parents=True)
+        for name in pm.MODEL_FILES:
+            (d / name).write_text("")
+    monkeypatch.setattr(pm, "MODELS_ROOT", str(root))
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_MODEL", raising=False)
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_VERSION", raising=False)
+
+    backend = ParakeetBackend()
+    label = lambda lang: aisubs_whisper.resolve_model_name("recommended", backend.name(), backend, lang)
+    assert label("en") == "parakeet-tdt-0.6b-v2"
+    assert label("en-GB") == "parakeet-tdt-0.6b-v2"
+    assert label(None) == "parakeet-tdt-0.6b-v2"
+    assert label("fr") == "parakeet-tdt-0.6b-v3"
+    assert label("uk") == "parakeet-tdt-0.6b-v3"
+
+
+def test_auto_engine_rule_prefers_parakeet_for_covered_languages(monkeypatch):
+    """Auto uses Parakeet when an installed variant covers the language, and the
+    hardware policy otherwise (mirrored in aisubs.lua engine_for)."""
+    import aisubs_whisper
+    import core.parakeet_models as pm
+
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_MODEL", raising=False)
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_VERSION", raising=False)
+
+    # English-only install: English yes, French no (that needs v3)
+    monkeypatch.setattr(pm, "installed_variants", lambda: [pm.VARIANTS[0]])
+    assert aisubs_whisper.auto_engine_for("en", "transcribe") == "parakeet"
+    assert aisubs_whisper.auto_engine_for("en-GB", "transcribe") == "parakeet"
+    assert aisubs_whisper.auto_engine_for(None, "transcribe") == "parakeet"
+    assert aisubs_whisper.auto_engine_for("fr", "transcribe") == "auto"
+    assert aisubs_whisper.auto_engine_for("ja", "transcribe") == "auto"
+
+    # v3 installed: the 25 languages are covered, others still are not
+    monkeypatch.setattr(pm, "installed_variants", lambda: [pm.VARIANTS[0], pm.VARIANTS[1]])
+    assert aisubs_whisper.auto_engine_for("fr", "transcribe") == "parakeet"
+    assert aisubs_whisper.auto_engine_for("uk", "transcribe") == "parakeet"
+    assert aisubs_whisper.auto_engine_for("ja", "transcribe") == "auto"
+
+    # no model installed: the hardware policy decides everything
+    monkeypatch.setattr(pm, "installed_variants", lambda: [])
+    assert aisubs_whisper.auto_engine_for("en", "transcribe") == "auto"
+
+    # Parakeet has no translation head
+    monkeypatch.setattr(pm, "installed_variants", lambda: [pm.VARIANTS[1]])
+    assert aisubs_whisper.auto_engine_for("en", "translate") == "auto"
 
 
 def test_resolve_model_name_without_a_label_uses_the_hardware_pick(monkeypatch):
     import aisubs_whisper
 
     class _NoOpinion:
-        def model_label(self, requested):
+        def model_label(self, requested, language=None):
             return None
 
     monkeypatch.setattr(aisubs_whisper, "_detect_vram_mb", lambda: 4096)

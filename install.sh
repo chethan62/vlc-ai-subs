@@ -55,14 +55,21 @@ else
 fi
 
 # ── 3. Parakeet backend (recommended for English media) ──
-# NVIDIA Parakeet-TDT-0.6B-v2 via sherpa-onnx: ~10x faster, native word
+# NVIDIA Parakeet-TDT-0.6B via sherpa-onnx: ~10x faster, native word
 # timestamps, CC-BY-4.0. Runs alongside WhisperX (multilingual default).
+# v2 = English, v3 = 25 European languages; set VSCL_AISUBS_PARAKEET_V3=1 to
+# install both (English keeps using the v2 model, other languages use v3).
 if [ -f "$HOME/.local/share/sherpa-onnx/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx" ]; then
     ok "Parakeet model already installed"
 else
     log "Installing Parakeet model (~600MB download)..."
     bash "$SCRIPT_DIR/install-parakeet-model.sh"
     ok "Parakeet model ready"
+fi
+if [ "${VSCL_AISUBS_PARAKEET_V3:-0}" = "1" ]; then
+    log "Installing multilingual Parakeet v3 (25 European languages, ~640MB)..."
+    bash "$SCRIPT_DIR/install-parakeet-model.sh" v3
+    ok "Parakeet v3 ready"
 fi
 if [ -x "$INSTALL_DIR/venv-whisperx/bin/python" ] && \
    "$INSTALL_DIR/venv-whisperx/bin/python" -c "import sherpa_onnx" 2>/dev/null; then

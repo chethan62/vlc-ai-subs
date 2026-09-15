@@ -52,9 +52,9 @@ local osd_channel     = nil
 -- the first added item and there is no dropdown:set_value()), so restoring a
 -- saved choice = adding that item first, keeping the mapping id-keyed.
 local ENGINES = {
-    { "auto",       "Auto (Parakeet for English, else best GPU engine)" },
+    { "auto",       "Auto (fastest engine for the language/hardware)" },
     { "whisperx",   "WhisperX (multilingual, aligned)" },
-    { "parakeet",   "Parakeet (English, fastest)" },
+    { "parakeet",   "Parakeet (fastest; v2 English / v3 25 languages)" },
     { "whispercpp", "whisper.cpp (Vulkan - AMD/Intel GPUs)" },
 }
 local MODELS = {
@@ -203,24 +203,90 @@ function get_task()       return picked(task_dropdown, task_map) end
 function get_mode()       return picked(mode_dropdown, mode_map) end
 function get_engine()     return picked(engine_dropdown, engine_map) end
 
+-- ── Parakeet model variants (mirror of core/parakeet_models.py) ──────────
+-- The dialog names the engine before the run starts, so it mirrors the rule
+-- the runner applies. Python stays authoritative: English prefers the v2 model,
+-- v3 covers the 25 languages below, and VSCL_AISUBS_PARAKEET_VERSION / _MODEL
+-- override the choice. Keep in sync with core/parakeet_models.py.
+local PARAKEET_V3_LANGS = {
+    bg = true, hr = true, cs = true, da = true, nl = true, en = true,
+    et = true, fi = true, fr = true, de = true, el = true, hu = true,
+    it = true, lv = true, lt = true, mt = true, pl = true, pt = true,
+    ro = true, sk = true, sl = true, es = true, sv = true, ru = true,
+    uk = true,
+}
+
+local PARAKEET_MODELS = {
+    v2 = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+    v3 = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+}
+
+local function parakeet_dir_ok(dir)
+    for _, name in ipairs({ "encoder.int8.onnx", "decoder.int8.onnx",
+                            "joiner.int8.onnx", "tokens.txt" }) do
+        local f = io.open(dir .. "/" .. name, "rb")
+        if not f then return false end
+        f:close()
+    end
+    return true
+end
+
+-- (v2_installed, v3_installed). An explicit VSCL_AISUBS_PARAKEET_MODEL names one
+-- directory: a known v2/v3 model keeps its own language set, anything else is
+-- taken to be the wider model (mirrors core/parakeet_models.py).
+local function parakeet_installed()
+    local explicit = os.getenv("VSCL_AISUBS_PARAKEET_MODEL") or ""
+    if explicit ~= "" then
+        explicit = string.gsub(explicit, "/+$", "")
+        if not parakeet_dir_ok(explicit) then return false, false end
+        local base = string.match(explicit, "([^/]+)$") or ""
+        if base == PARAKEET_MODELS.v2 then return true, false end
+        if base == PARAKEET_MODELS.v3 then return false, true end
+        return true, true
+    end
+    local root = (os.getenv("HOME") or "") .. "/.local/share/sherpa-onnx/models"
+    return parakeet_dir_ok(root .. "/" .. PARAKEET_MODELS.v2),
+           parakeet_dir_ok(root .. "/" .. PARAKEET_MODELS.v3)
+end
+
+-- Does the installed Parakeet cover this language? (mirrors select_variant())
+function parakeet_supports(language)
+    local v2, v3 = parakeet_installed()
+    local forced = string.lower(os.getenv("VSCL_AISUBS_PARAKEET_VERSION") or "")
+    if forced == "v2" then v3 = false end
+    if forced == "v3" then v2 = false end
+    if not (v2 or v3) then return false end
+    if language == nil or language == "auto" then return true end
+    local primary = string.match(string.lower(language), "^([a-z]+)")
+    if primary == "en" then return true end
+    return v3 and primary ~= nil and PARAKEET_V3_LANGS[primary] == true
+end
+
 -- Resolve the engine choice to one that can actually do the job: Parakeet has
--- no translation and no language detection, so "Auto" only picks it for an
--- explicit English transcribe run. Everything else stays "auto" and is decided
--- in Python, which is the side that can see the hardware (NVIDIA CUDA →
--- WhisperX; Vulkan-only GPU → whisper.cpp). Returns engine, note.
+-- no translation head, and it only covers the languages of the models that are
+-- installed (v2 = English, v3 = 25 European). Everything else stays "auto" and
+-- is decided in Python, which is the side that can see the hardware (NVIDIA
+-- CUDA → WhisperX; Vulkan-only GPU → whisper.cpp). Returns engine, note.
 function engine_for(engine, language, task)
-    local english = language and string.match(language, "^en")
     if engine == "parakeet" then
         if task == "translate" then
             return "whisperx", "Parakeet cannot translate - using WhisperX"
         end
-        if language and language ~= "auto" and not english then
-            return "whisperx", "Parakeet is English-only - using WhisperX"
+        if not parakeet_supports(language) then
+            local v2 = parakeet_installed()
+            if v2 then
+                return "whisperx",
+                    "installed Parakeet model has no '" .. tostring(language) ..
+                    "' (v3 adds 25 European languages) - using WhisperX"
+            end
+            return "whisperx", "Parakeet model is not installed - using WhisperX"
         end
         return "parakeet", nil
     end
     if engine == "auto" then
-        if task == "transcribe" and english then return "parakeet", nil end
+        if task == "transcribe" and parakeet_supports(language) then
+            return "parakeet", nil
+        end
         return "auto", nil
     end
     if engine == "whispercpp" and task == "translate" then

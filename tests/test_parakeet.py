@@ -66,20 +66,49 @@ def test_translate_task_rejected(runner, capsys, monkeypatch):
         runner.main()
     assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "Parakeet is English-only" in out
+    assert "cannot translate" in out
 
 
-def test_non_english_language_rejected(runner, capsys, monkeypatch):
+def test_unsupported_language_rejected(runner, capsys, monkeypatch, tmp_path):
+    """A language outside the variants' language sets (ja is not one of v3's 25)
+    is refused with the list of languages v3 would add."""
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v2")  # English-only install
     monkeypatch.setattr(
-        sys, "argv", ["runner", "m.mp4", "tiny", "fr", "transcribe"]
+        sys, "argv", ["runner", "m.mp4", "tiny", "ja", "transcribe"]
     )
     with pytest.raises(SystemExit) as exc:
         runner.main()
     assert exc.value.code == 1
-    assert "supports English only" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "does not support 'ja'" in out
+    assert "install-parakeet-model.sh" in out
+    assert "es" in out  # v3's languages are listed
 
 
-def test_missing_media_emits_error(runner, capsys, monkeypatch):
+def test_v3_only_install_accepts_any_v3_language(runner, capsys, monkeypatch, tmp_path):
+    """With v3 installed a non-English language runs; the status line names v3."""
+    media = tmp_path / "clip.wav"
+    media.write_bytes(b"x")
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v3")
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "ignored", "fr", "transcribe"])
+    runner.main()
+    out = capsys.readouterr().out
+    assert "does not support" not in out
+    assert "parakeet-tdt-0.6b-v3" in out
+
+
+def test_region_code_is_normalized(runner, capsys, monkeypatch, tmp_path):
+    """'en-GB' used to be rejected (raw string compare against 'en')."""
+    media = tmp_path / "clip.wav"
+    media.write_bytes(b"x")
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v2")
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "ignored", "en-GB", "transcribe"])
+    runner.main()
+    assert "does not support" not in capsys.readouterr().out
+
+
+def test_missing_media_emits_error(runner, capsys, monkeypatch, tmp_path):
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v2")
     monkeypatch.setattr(
         sys, "argv", ["runner", "/nonexistent/file.mp4", "tiny", "en", "transcribe"]
     )
@@ -90,10 +119,10 @@ def test_missing_media_emits_error(runner, capsys, monkeypatch):
 
 
 def test_missing_model_emits_install_hint(runner, capsys, monkeypatch, tmp_path):
-    """Media exists but the model is not installed → actionable error."""
+    """Media exists but no model is installed → actionable error."""
     media = tmp_path / "fake.mp4"
     media.write_bytes(b"junk")
-    monkeypatch.setattr(runner, "MODEL_DIR", str(tmp_path / "no-model-dir"))
+    monkeypatch.setenv("VSCL_AISUBS_PARAKEET_MODEL", str(tmp_path / "no-model-dir"))
     monkeypatch.setattr(
         sys, "argv", ["runner", str(media), "tiny", "en", "transcribe"]
     )
@@ -101,6 +130,19 @@ def test_missing_model_emits_install_hint(runner, capsys, monkeypatch, tmp_path)
         runner.main()
     assert exc.value.code == 1
     assert "install-parakeet-model.sh" in capsys.readouterr().out
+
+
+def test_forced_version_that_is_not_installed_says_so(runner, capsys, monkeypatch, tmp_path):
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v2")
+    monkeypatch.setenv("VSCL_AISUBS_PARAKEET_VERSION", "v3")
+    monkeypatch.setattr(
+        sys, "argv", ["runner", "m.mp4", "tiny", "en", "transcribe"]
+    )
+    with pytest.raises(SystemExit):
+        runner.main()
+    out = capsys.readouterr().out
+    assert "VSCL_AISUBS_PARAKEET_VERSION=v3" in out
+    assert "install-parakeet-model.sh" in out
 
 
 # ── long-media chunking ───────────────────────────────────────────────
@@ -121,12 +163,18 @@ def test_shift_words_offsets_timestamps(runner):
     assert runner.shift_words([], 5.0) == []
 
 
-def test_backend_model_name_tracks_the_runner(runner):
-    """The CLI reports backends.parakeet.MODEL_NAME; it must match what the
-    runner actually loads (single fixed model, no drift)."""
-    from backends.parakeet import MODEL_NAME
+def test_backend_model_label_tracks_the_runner(runner, monkeypatch, tmp_path):
+    """The CLI prints backends.parakeet.model_label(); the runner loads the same
+    variant — a status line must never name a model that is not the one running."""
+    from backends.parakeet import ParakeetBackend
+    import core.parakeet_models as pm
 
-    assert MODEL_NAME == runner.MODEL_NAME
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_VERSION", raising=False)
+    for variant, expected in (("v2", "parakeet-tdt-0.6b-v2"),
+                              ("v3", "parakeet-tdt-0.6b-v3")):
+        monkeypatch.setenv("VSCL_AISUBS_PARAKEET_MODEL", str(_model_dir(tmp_path, variant)))
+        assert pm.model_label() == expected
+        assert ParakeetBackend().model_label("large") == expected
 
 
 # ── SRT side effects: write only when the caller asked for a path ──────────
@@ -179,22 +227,31 @@ _FAKE_TOKENS = {
 }
 
 
-def _model_dir(tmp_path):
-    d = tmp_path / "model"
+def _model_dir(tmp_path, variant="v2"):
+    """A directory that looks like an installed Parakeet variant (v2/v3)."""
+    name = {
+        "v2": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+        "v3": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+    }[variant]
+    d = tmp_path / name
     d.mkdir(exist_ok=True)
-    for name in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"):
-        (d / name).write_text("")
+    for f in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"):
+        (d / f).write_text("")
     return d
 
 
-def _arm_runner(runner, monkeypatch, tmp_path):
+def _arm_runner(runner, monkeypatch, tmp_path, variant="v2"):
     """Model files present; ffmpeg decode, numpy load and sherpa-onnx all faked.
+
+    The model directory is handed over through VSCL_AISUBS_PARAKEET_MODEL, so
+    the runner's real variant selection runs (no MODEL_* monkeypatching).
 
     load_float32_16k() is the only numpy user in the runner (the dev test venv
     intentionally has no numpy), and the runner treats the samples as a plain
     sequence, so a list of floats stands in for the array.
     """
-    monkeypatch.setattr(runner, "MODEL_DIR", str(_model_dir(tmp_path)))
+    monkeypatch.setenv("VSCL_AISUBS_PARAKEET_MODEL", str(_model_dir(tmp_path, variant)))
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_VERSION", raising=False)
     monkeypatch.setitem(
         sys.modules, "sherpa_onnx",
         SimpleNamespace(OfflineRecognizer=_FakeOfflineRecognizer),
