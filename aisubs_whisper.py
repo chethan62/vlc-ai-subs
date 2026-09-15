@@ -190,13 +190,18 @@ def _install_cancel_handler() -> None:
 def auto_engine_for(language: str | None, task: str = "transcribe") -> str:
     """Engine for ``VSCL_AISUBS_BACKEND`` unset/auto: "parakeet" or "auto".
 
-    Auto prefers Parakeet when an installed variant covers the requested
-    language — English uses the v2 model, v3's 25 European languages use v3 —
-    because it is ~10x faster with better English WER than WhisperX. Everything
-    else (translate, which Parakeet cannot do; an unsupported language; no model
-    installed) falls through to the hardware policy in
-    ``backends.resolve_backend("auto")``: NVIDIA → WhisperX, Vulkan-only →
-    whisper.cpp, otherwise CPU.
+    Auto prefers Parakeet for a **known** language an installed variant covers —
+    English uses the v2 model, v3's 25 European languages use v3 — because it is
+    ~10x faster with better English WER than WhisperX. Everything else falls
+    through to the hardware policy in ``backends.resolve_backend("auto")``:
+    NVIDIA → WhisperX, Vulkan-only → whisper.cpp, otherwise CPU.
+
+    An *unspecified* language (`auto`) must not reach Parakeet: it has no
+    language detection, and measured on the real v3 model, unhinted decoding
+    garbles non-English audio (German came out as "Alas hat an ende, no divorce
+    tatzwai", where Whisper/WhisperX's LID got it right). Pick Parakeet
+    explicitly for English media left on `auto`. Same reason translate is out:
+    Parakeet has no translation head.
 
     The dialog mirrors this rule in aisubs.lua's engine_for() so its engine
     preview is truthful before the run starts; core/parakeet_models.py is the
@@ -210,7 +215,7 @@ def auto_engine_for(language: str | None, task: str = "transcribe") -> str:
     if not installed:
         return "auto"
     wanted = normalize_language(language)
-    if wanted is None or wanted in installed:
+    if wanted is not None and wanted in installed:
         return "parakeet"
     return "auto"
 

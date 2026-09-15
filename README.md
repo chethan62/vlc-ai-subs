@@ -96,11 +96,16 @@ k2-fsa's ONNX conversion handles the multilingual prompt internally).
 **Auto (the default)** picks the fastest engine that covers the language: an
 installed Parakeet that supports it — English → v2, the other 24 → v3 — wins
 over the hardware policy (NVIDIA → WhisperX, a Vulkan-only GPU (AMD/Intel) →
-whisper.cpp, nothing usable → WhisperX on CPU). Translation always needs
-WhisperX (Parakeet has no translation head), and a language that no installed
-variant covers stays off Parakeet. Choosing Parakeet explicitly with translate
-or an uncovered language falls back to WhisperX with a note in the status line
-instead of failing the run.
+whisper.cpp, nothing usable → WhisperX on CPU).
+
+Parakeet is only chosen for a **known** language: it has no language detection,
+and unhinted decoding garbles non-English audio (measured on v3 — German came
+out as "Alas hat an ende, no divorce tatzwai", while WhisperX's LID got it
+right). So `auto` language, translate (no translation head) and any language no
+installed variant covers all stay on the detecting engines — WhisperX or
+whisper.cpp. Choosing Parakeet *explicitly* with an unsupported language falls
+back to WhisperX with a note in the status line; choosing it explicitly with
+`auto` language is honoured, so leave `auto` only for English-ish media.
 
 ### AMD / Intel GPUs (Vulkan)
 

@@ -284,7 +284,11 @@ function engine_for(engine, language, task)
         return "parakeet", nil
     end
     if engine == "auto" then
-        if task == "transcribe" and parakeet_supports(language) then
+        -- Only a known, covered language may reach Parakeet here: it has no
+        -- language detection, and unhinted decoding garbles non-English audio
+        -- (measured on v3). "auto" language stays on the detecting engines.
+        if task == "transcribe" and language and language ~= "auto"
+            and parakeet_supports(language) then
             return "parakeet", nil
         end
         return "auto", nil

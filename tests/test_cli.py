@@ -226,9 +226,13 @@ def test_auto_engine_rule_prefers_parakeet_for_covered_languages(monkeypatch):
     monkeypatch.setattr(pm, "installed_variants", lambda: [pm.VARIANTS[0]])
     assert aisubs_whisper.auto_engine_for("en", "transcribe") == "parakeet"
     assert aisubs_whisper.auto_engine_for("en-GB", "transcribe") == "parakeet"
-    assert aisubs_whisper.auto_engine_for(None, "transcribe") == "parakeet"
     assert aisubs_whisper.auto_engine_for("fr", "transcribe") == "auto"
     assert aisubs_whisper.auto_engine_for("ja", "transcribe") == "auto"
+    # An UNSPECIFIED language must not reach Parakeet: it has no language
+    # detection and unhinted decoding garbles non-English audio (measured), so
+    # `auto` stays on the engines that can detect (WhisperX / whisper.cpp).
+    assert aisubs_whisper.auto_engine_for(None, "transcribe") == "auto"
+    assert aisubs_whisper.auto_engine_for("auto", "transcribe") == "auto"
 
     # v3 installed: the 25 languages are covered, others still are not
     monkeypatch.setattr(pm, "installed_variants", lambda: [pm.VARIANTS[0], pm.VARIANTS[1]])
