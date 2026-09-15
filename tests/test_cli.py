@@ -82,6 +82,10 @@ class _FakeBackend:
     def name(self):
         return "fake"
 
+    def model_label(self, requested):
+        """No opinion → the CLI's VRAM/RAM picker decides (see base.py)."""
+        return None
+
     def transcribe(self, media_path, model_name, language, task):
         yield from self._segments
 
@@ -149,3 +153,90 @@ def test_srt_write_failure_both_paths_errors(monkeypatch, capsys, tmp_path):
     lines = [json.loads(l) for l in capsys.readouterr().out.strip().splitlines()]
     assert lines[-1]["type"] == "error"
     assert "Could not write SRT" in lines[-1]["msg"]
+
+
+# ── model resolution: dialog pick → the model that actually runs ──────────
+
+def test_resolve_model_name_recommended_uses_hardware_pick(monkeypatch):
+    import aisubs_whisper
+
+    monkeypatch.setattr(aisubs_whisper, "_detect_vram_mb", lambda: 4096)
+    monkeypatch.setattr(aisubs_whisper, "_detect_ram_gb", lambda: 16)
+    assert aisubs_whisper.resolve_model_name("recommended", "whisperx (aligned)") == "large-v3-turbo"
+
+
+def test_resolve_model_name_explicit_pick_is_passed_through():
+    import aisubs_whisper
+
+    assert aisubs_whisper.resolve_model_name("medium", "whisperx (aligned)") == "medium"
+    assert aisubs_whisper.resolve_model_name("large-v3-turbo", "whisperx (aligned)") == "large-v3-turbo"
+
+
+def test_resolve_model_name_uses_the_backend_label():
+    """An engine that ignores the dialog's pick reports its own model — Parakeet
+    runs one fixed model, so a WhisperX name must never be reported."""
+    import aisubs_whisper
+    from backends.parakeet import MODEL_NAME, ParakeetBackend
+
+    assert "parakeet" in MODEL_NAME
+    backend = ParakeetBackend()
+    assert aisubs_whisper.resolve_model_name("recommended", backend.name(), backend) == MODEL_NAME
+    assert aisubs_whisper.resolve_model_name("large", backend.name(), backend) == MODEL_NAME
+
+
+def test_resolve_model_name_without_a_label_uses_the_hardware_pick(monkeypatch):
+    import aisubs_whisper
+
+    class _NoOpinion:
+        def model_label(self, requested):
+            return None
+
+    monkeypatch.setattr(aisubs_whisper, "_detect_vram_mb", lambda: 4096)
+    monkeypatch.setattr(aisubs_whisper, "_detect_ram_gb", lambda: 16)
+    assert aisubs_whisper.resolve_model_name(
+        "recommended", "whisperx (aligned)", _NoOpinion()
+    ) == "large-v3-turbo"
+    assert aisubs_whisper.resolve_model_name(
+        "tiny", "whisperx (aligned)", _NoOpinion()
+    ) == "tiny"
+
+
+# ── cancellation: pid file + SIGTERM handler ──────────────────────────────
+
+def test_pid_file_round_trip(tmp_path):
+    """The extension cancels by reading <mirror>.pid, so it must hold our PID."""
+    import aisubs_whisper
+
+    mirror = str(tmp_path / "aisubs_x.txt")
+    path = aisubs_whisper._write_pid_file(mirror)
+    assert path is not None
+    assert path == mirror + aisubs_whisper.PID_SUFFIX
+    assert open(path, encoding="utf-8").read().strip() == str(os.getpid())
+
+    aisubs_whisper._remove_pid_file(path)
+    assert not os.path.exists(path)
+
+
+def test_pid_file_skipped_without_mirror():
+    import aisubs_whisper
+
+    assert aisubs_whisper._write_pid_file(None) is None
+
+
+def test_sigterm_stops_children_and_exits(monkeypatch):
+    """SIGTERM (what the extension sends) must stop the ML child, not leak it."""
+    import signal
+
+    import aisubs_whisper
+
+    calls = []
+    monkeypatch.setattr(aisubs_whisper, "terminate_all", lambda: calls.append("stop") or 1)
+    aisubs_whisper._install_cancel_handler()
+
+    with pytest.raises(SystemExit) as exc:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    assert exc.value.code == 130
+    assert calls == ["stop"]
+    # Restore the default so a later signal cannot confuse the test run.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)

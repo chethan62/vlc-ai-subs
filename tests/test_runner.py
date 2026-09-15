@@ -16,6 +16,7 @@ _RUNNER = str(__import__("pathlib").Path(__file__).resolve().parent.parent / "wh
 @pytest.fixture(scope="module")
 def runner():
     spec = importlib.util.spec_from_file_location("whisperx_runner_test", _RUNNER)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -123,3 +124,56 @@ def test_hardened_asr_options(runner):
     assert opts["temperatures"] == [0.0]
     assert opts["hallucination_silence_threshold"] == 2.0
     assert opts["no_speech_threshold"] >= 0.6
+
+
+# ── SRT side effects: write only when the caller asked for a path ──────────
+# Regression: the backends never forward argv[5]/argv[6], so a runner that
+# derives <media>.srt drops a side-effect file next to the media — the same
+# file realtime-OSD runs deliberately write to a temp path instead (and a
+# read-only media dir would make it an error).
+
+class _FakeWxModel:
+    def transcribe(self, path, language=None, task=None):
+        return {
+            "language": "en",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+        }
+
+
+def _fake_whisperx(monkeypatch):
+    import types
+
+    # SimpleNamespace (not ModuleType) so attribute assignment is well-typed.
+    mod = types.SimpleNamespace(load_model=lambda *a, **k: _FakeWxModel())
+    monkeypatch.setitem(sys.modules, "whisperx", mod)
+
+
+def test_runner_writes_no_srt_next_to_media(runner, monkeypatch, tmp_path, capsys):
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"x")
+    _fake_whisperx(monkeypatch)
+
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "tiny", "en", "transcribe"])
+    runner.main()
+
+    assert not (tmp_path / "clip.srt").exists()
+    out = capsys.readouterr().out
+    assert '"type": "done"' in out
+    assert '"srt_path": null' in out
+
+
+def test_runner_writes_srt_when_path_given(runner, monkeypatch, tmp_path):
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"x")
+    wanted = tmp_path / "wanted.srt"
+    _fake_whisperx(monkeypatch)
+
+    monkeypatch.setattr(
+        sys, "argv",
+        ["runner", str(media), "tiny", "en", "transcribe", "mirror.txt", str(wanted)],
+    )
+    runner.main()
+
+    assert wanted.is_file()
+    assert "hello" in wanted.read_text(encoding="utf-8")
+    assert not (tmp_path / "clip.srt").exists()

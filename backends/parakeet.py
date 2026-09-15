@@ -4,19 +4,27 @@ Runs inside the shared Python 3.12 venv (`venv-whisperx`), same subprocess
 + JSONL pattern as whisperx_backend. Selected explicitly via
 VSCL_AISUBS_BACKEND=parakeet — WhisperX remains the default engine.
 
-2026-08 research: WER 6.05 (beats Whisper large-v3 7.44), native word-level
-timestamps, ~0.7GB int8, CC-BY-4.0, transducer = no hallucination loops.
+2026-08 research: WER 6.05 self-reported (whisper-large-v3 7.44 on a
+comparable English eval), native word-level timestamps, ~0.7GB int8,
+CC-BY-4.0, transducer = no hallucination loops.
 """
 
 import os
-import subprocess
 from typing import Iterable
+
+from core.procs import run_captured
+from core.timeouts import resolve_timeout
 
 from .base import TranscriptionBackend
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _RUNNER = os.path.join(_BASE, "parakeet_runner.py")
 _VENV = os.path.join(_BASE, "venv-whisperx")
+
+# The one model this backend runs. The runner ignores the <model> arg, so the
+# CLI reports this instead of the dialog's pick (see aisubs_whisper.resolve_model_name);
+# parakeet_runner.MODEL_NAME must stay identical (pinned by a test).
+MODEL_NAME = "parakeet-tdt-0.6b-v2"
 
 if not (os.path.isfile(_RUNNER) and os.path.isdir(_VENV)):
     _SHARE = os.path.expanduser("~/.local/share/vlc-ai-subs")
@@ -56,9 +64,7 @@ class ParakeetBackend(TranscriptionBackend):
         ]
         env = {**os.environ, "PYTHONPATH": ""}
         debug = env.get("VSCL_AISUBS_DEBUG") == "1"
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=3600, env=env,
-        )
+        proc = run_captured(cmd, timeout=resolve_timeout(task), env=env)
         if debug:
             import sys as _sys
             try:
@@ -96,6 +102,9 @@ class ParakeetBackend(TranscriptionBackend):
                 import sys as _sys
                 _sys.stderr.write(f"[parakeet] {obj.get('msg', '')}\n")
 
-    @staticmethod
-    def name() -> str:
+    def name(self) -> str:
         return "parakeet (en, fast)"
+
+    def model_label(self, requested: str) -> str | None:
+        """Parakeet runs one fixed model — the <model> arg is ignored."""
+        return MODEL_NAME

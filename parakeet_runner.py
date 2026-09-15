@@ -4,8 +4,9 @@ Parakeet runner — invoked by the plugin as a subprocess inside the Python
 3.12 venv (sherpa-onnx). English-only, NVIDIA Parakeet-TDT-0.6B-v2 int8.
 
 Why (2026-08 research): native word-level timestamps (no aligner step),
-WER 6.05% (beats Whisper large-v3 7.44%), ~10x faster, ~0.7GB int8,
-CC-BY-4.0, transducer blanking = no hallucination loops on music.
+WER 6.05% self-reported (whisper-large-v3 7.44% on a comparable English
+eval), ~10x faster, ~0.7GB int8, CC-BY-4.0, transducer blanking = no
+hallucination loops on music.
 
 Contract (stdout, JSONL) — same as whisperx_runner:
   {"type": "status", "msg": "..."}
@@ -24,14 +25,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
 import wave
 from typing import TYPE_CHECKING
 
+from core.audio import SAMPLE_RATE, decode_to_wav16k
+from core.cues import apply_quality
 from core.srt import write_srt
 
 if TYPE_CHECKING:
@@ -45,27 +45,6 @@ MODEL_DIR = os.path.expanduser(
 
 def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
-
-
-def decode_to_wav16k(media_path: str) -> str:
-    """Decode arbitrary media to a 16 kHz mono PCM wav via ffmpeg."""
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg not found — required by the Parakeet backend")
-    fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="parakeet_")
-    os.close(fd)
-    proc = subprocess.run(
-        [ffmpeg, "-y", "-v", "error", "-i", media_path,
-         "-ac", "1", "-ar", "16000", "-f", "wav", tmp],
-        capture_output=True, text=True, timeout=600,
-    )
-    if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise RuntimeError(f"ffmpeg decode failed: {(proc.stderr or '').strip()[:300]}")
-    return tmp
 
 
 def load_float32_16k(wav_path: str) -> "np.ndarray":
@@ -121,7 +100,6 @@ def words_to_segments(words) -> list:
     return segments
 
 
-SAMPLE_RATE = 16000
 # 20 min — the 0.6B TDT model is designed for up to 24-min single-pass
 # segments; long media is decoded in chunks instead of one giant stream.
 CHUNK_SECONDS = 20 * 60
@@ -208,9 +186,11 @@ def main():
 
     segments = words_to_segments(words)
 
-    # Drop known hallucination segments (research §2.2) before emitting.
+    # Drop known hallucination segments (research §2.2) before emitting, then
+    # wrap the cue text (broadcast-style line breaks) + clean timing gaps.
     from core.blocklist import filter_segments
     segments = filter_segments(segments)
+    segments = apply_quality(segments)
 
     # Emit each segment for the caller (status / OSD progress).
     for i, seg in enumerate(segments, 1):
@@ -220,14 +200,18 @@ def main():
             "text": seg["text"],
         })
 
-    # Write SRT — only when the caller explicitly requested a path (the
-    # plugin caller owns SRT output; no <media>.srt side effects). Empty
-    # output → write_srt returns None (no 0-byte SRTs).
-    try:
-        srt_path = write_srt(segments, media_path, srt_requested)
-    except OSError as exc:
-        emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
-        sys.exit(1)
+    # Write SRT — ONLY when the caller explicitly requested a path. The
+    # plugin's caller (aisubs_whisper.py) owns SRT output; deriving
+    # <media>.srt here would drop a side-effect file next to the media
+    # (read-only media dirs, and realtime-OSD runs that deliberately write to
+    # a temp path instead). Empty output → write_srt returns None.
+    srt_path = None
+    if srt_requested:
+        try:
+            srt_path = write_srt(segments, media_path, srt_requested)
+        except OSError as exc:
+            emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
+            sys.exit(1)
 
     emit({"type": "done", "segments": len(segments), "srt_path": srt_path})
 

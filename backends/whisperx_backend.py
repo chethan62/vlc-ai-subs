@@ -8,8 +8,10 @@ as the main JSONL interface.
 """
 
 import os
-import subprocess
 from typing import Iterable
+
+from core.procs import run_captured
+from core.timeouts import resolve_timeout
 
 from .base import TranscriptionBackend
 
@@ -60,11 +62,10 @@ class WhisperXBackend(TranscriptionBackend):
         # pip-installed packages inside venv-whisperx.
         env = {**os.environ, "PYTHONPATH": ""}
         debug = env.get("VSCL_AISUBS_DEBUG") == "1"
-        # translate runs the NLLB cascade after transcribing — give it room.
-        timeout = 2400 if task == "translate" else 1200
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env,
-        )
+        # Generous, task-aware ceiling (VSCL_AISUBS_TIMEOUT overrides) — a flat
+        # 20 min failed every film longer than ~40 min at 2x realtime.
+        timeout = resolve_timeout(task)
+        proc = run_captured(cmd, timeout=timeout, env=env)
         if debug:
             # Full dump for forensics — survives the subprocess either way.
             import sys as _sys
@@ -106,6 +107,5 @@ class WhisperXBackend(TranscriptionBackend):
                 import sys as _sys
                 _sys.stderr.write(f"[whisperx] {obj.get('msg', '')}\n")
 
-    @staticmethod
-    def name() -> str:
+    def name(self) -> str:
         return "whisperx (aligned)"

@@ -8,6 +8,10 @@ Architecture
   core/
     emitter.py             JSONL output + file mirror for Lua polling
     srt.py                 SRT timestamp formatting and file writing
+    cues.py                cue line-wrapping + timing quality pass
+    blocklist.py           hallucination-phrase filter
+    procs.py               live-child registry (cancellation)
+    timeouts.py            subprocess ceilings (VSCL_AISUBS_TIMEOUT)
   backends/
     base.py                Abstract TranscriptionBackend
     whisperx_backend.py    WhisperX (word-aligned, Python 3.12 subprocess) — default
@@ -24,12 +28,15 @@ Output (stdout) — one JSON object per line
   {"type": "error", "msg": "..."}
 """
 
+import atexit
 import os
+import signal
 import sys
 import time
 import traceback
 
 from core.emitter import Emitter
+from core.procs import terminate_all
 from core.srt import write_srt
 from core.blocklist import filter_segments
 from backends import resolve_backend
@@ -109,6 +116,72 @@ def _recommend_model(backend_name: str = "whisperx") -> str:
     return "base"
 
 
+def resolve_model_name(model_name: str, backend_name: str, backend=None) -> str:
+    """Map the dialog's model choice to the model that will actually run.
+
+    An engine that ignores the dialog's pick reports its own label through
+    ``TranscriptionBackend.model_label()`` (Parakeet: one fixed model;
+    whisper.cpp: an installed ggml file) — without that, status lines named
+    models that were not running (e.g. "parakeet — large-v3-turbo"). Otherwise
+    "recommended" is sized from VRAM/RAM and explicit picks pass through.
+    """
+    if backend is not None:
+        label = backend.model_label(model_name)
+        if label:
+            return label
+    if model_name == "recommended":
+        return _recommend_model(backend_name)
+    return model_name
+
+
+# ── Cancellation ─────────────────────────────────────────────────────────
+
+PID_SUFFIX = ".pid"
+
+
+def _remove_pid_file(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _write_pid_file(mirror_file: str | None) -> str | None:
+    """Record this process's PID next to the mirror file.
+
+    The VLC extension has no process API: it cancels a run by killing the PID
+    found in ``<mirror>.pid``, and the SIGTERM handler below then stops the ML
+    subprocess — that child is not in a process group the extension can signal
+    (VLC launches us via ``sh -c '... &'``, in VLC's own group).
+    """
+    if not mirror_file:
+        return None
+    path = mirror_file + PID_SUFFIX
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        return None
+    return path
+
+
+def _install_cancel_handler() -> None:
+    """SIGTERM/SIGINT → stop the backend child, then exit non-zero."""
+
+    def handler(signum, _frame):
+        killed = terminate_all()
+        sys.stderr.write(
+            f"[aisubs] cancelled (signal {signum}); stopped {killed} subprocess(es)\n"
+        )
+        raise SystemExit(130)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):  # not the main thread / unsupported
+            pass
+
+
 # ── CLI entry-point ──────────────────────────────────────────────────────
 
 def main():
@@ -140,6 +213,14 @@ def main():
 
     emitter = Emitter(mirror_file)
 
+    # Cancel support (registered before any long work starts): the extension
+    # kills this PID, we stop the ML child, and the pid file is cleaned up on
+    # every exit path (atexit covers the sys.exit()/error branches below).
+    _install_cancel_handler()
+    pid_path = _write_pid_file(mirror_file)
+    if pid_path:
+        atexit.register(_remove_pid_file, pid_path)
+
     if not os.path.isfile(media_path):
         emitter.emit({"type": "error", "msg": f"File not found: {media_path}"})
         emitter.close()
@@ -154,13 +235,14 @@ def main():
     if debug:
         _log_debug(f"backend resolved: {backend.name()} ({time.time() - _t0:.1f}s)")
 
-    # Resolve "recommended" → best model for this backend + hardware
-    if model_name == "recommended":
-        model_name = _recommend_model(backend.name())
-        if debug:
-            _log_debug(
-                f"recommended -> {model_name} (VRAM {_detect_vram_mb()} MiB, RAM {_detect_ram_gb()} GiB)"
-            )
+    # Resolve the dialog's pick → the model that will actually run
+    resolved = resolve_model_name(model_name, backend.name(), backend)
+    if debug and resolved != model_name:
+        _log_debug(
+            f"model: {model_name} -> {resolved} "
+            f"(VRAM {_detect_vram_mb()} MiB, RAM {_detect_ram_gb()} GiB)"
+        )
+    model_name = resolved
 
     emitter.emit({
         "type": "status",

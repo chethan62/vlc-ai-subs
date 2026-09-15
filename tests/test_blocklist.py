@@ -6,6 +6,7 @@ from pathlib import Path
 _SPEC = importlib.util.spec_from_file_location(
     "core.blocklist", Path(__file__).resolve().parent.parent / "core" / "blocklist.py"
 )
+assert _SPEC is not None and _SPEC.loader is not None
 bl = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(bl)
 

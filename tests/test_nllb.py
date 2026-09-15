@@ -9,6 +9,7 @@ from pathlib import Path
 
 _RUNNER = Path(__file__).resolve().parent.parent / "nllb_translate.py"
 _spec = importlib.util.spec_from_file_location("nllb_translate", _RUNNER)
+assert _spec is not None and _spec.loader is not None
 nllb = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(nllb)
 

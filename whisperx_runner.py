@@ -25,6 +25,7 @@ import json
 import os
 import sys
 
+from core.cues import apply_quality
 from core.srt import write_srt
 
 
@@ -218,8 +219,9 @@ def main():
         except Exception:
             emit({"type": "status", "msg": "Alignment skipped (may need different language model)"})
 
-    # 4. Yield segments; collect dicts for the SRT writer (shared core.srt)
-    segments = result.get("segments", [])
+    # 4. Wrap the cue text (broadcast-style line breaks) and clean the timing
+    # gaps before emitting — the SRT and the OSD feed share this text.
+    segments = apply_quality(result.get("segments", []))
     out_segments = []
     count = 0
 
@@ -236,14 +238,18 @@ def main():
         out_segments.append(item)
         emit({"type": "sub", "i": count, **item})
 
-    # 5. Write SRT — only when the caller explicitly requested a path (the
-    # plugin caller owns SRT output; no <media>.srt side effects). Empty
-    # output → write_srt returns None (no 0-byte SRTs).
-    try:
-        srt_path = write_srt(out_segments, media_path, srt_requested)
-    except OSError as exc:
-        emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
-        sys.exit(1)
+    # 5. Write SRT — ONLY when the caller explicitly requested a path. The
+    # plugin's caller (aisubs_whisper.py) owns SRT output; deriving
+    # <media>.srt here would drop a side-effect file next to the media
+    # (read-only media dirs, and realtime-OSD runs that deliberately write to
+    # a temp path instead). Empty output → write_srt returns None.
+    srt_path = None
+    if srt_requested:
+        try:
+            srt_path = write_srt(out_segments, media_path, srt_requested)
+        except OSError as exc:
+            emit({"type": "error", "msg": f"Could not write SRT: {exc}"})
+            sys.exit(1)
 
     emit({"type": "done", "segments": count, "srt_path": srt_path})
 
