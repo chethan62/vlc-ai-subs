@@ -42,6 +42,13 @@ and `VSCL_AISUBS_PARAKEET_V3=1` adds Parakeet's multilingual v3 model).
 `setup.sh` is the minimal WhisperX-only
 variant (no Parakeet, no NLLB, no whisper.cpp, no ffmpeg check).
 
+The extension is installed into VLC's **user data dir**, so no root is needed; if
+a system-wide VLC directory exists the installer also tries to copy there via
+`sudo`, and declines gracefully when that isn't possible (no rights, a password
+prompt you can't answer — e.g. `curl … | bash`). Every step reports its own
+result, so a failed model download or build says so instead of printing a success
+line.
+
 ### Windows
 
 ```powershell
@@ -128,7 +135,10 @@ back to CPU when no device is present.
 
 - `install.sh` runs that automatically on machines **without** an NVIDIA GPU
   (set `VSCL_AISUBS_WHISPERCPP=1` to install it on an NVIDIA box too, or
-  `VSCL_AISUBS_SKIP_WHISPERCPP=1` to skip it).
+  `VSCL_AISUBS_SKIP_WHISPERCPP=1` to skip it). Those branches are exercised by
+  `tests/install_branches.sh` rather than left to inspection — including a failed
+  Vulkan build, which warns and carries on so the rest of the install still
+  completes.
 - The engine needs no Python ML packages — only ffmpeg and the binary — so it
   works even when `venv-whisperx` is absent.
 - Measured on this repo's dev box (a power-capped GTX 1650, so the gain here is
@@ -334,8 +344,19 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 175 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 188 tests (model-free)
+bash tests/install_branches.sh                               # installer branch matrix: 18 checks
 ```
+
+The installer's engine-selection and failure-reporting branches — the ones that
+never run on a CUDA box — are covered by `tests/install_branches.sh`. It runs the
+real `install.sh`/`setup.sh` against a sandbox (private `HOME`, a curated `PATH`
+so `nvidia-smi` can be present or absent, stubbed downloads, and a `sudo` that
+always refuses) and asserts: AMD/Intel → the Vulkan engine installs itself,
+NVIDIA → it stays opt-in, `VSCL_AISUBS_SKIP_WHISPERCPP=1` wins anywhere, an
+existing build is not rebuilt, a failed Vulkan build does not abort the install,
+a denied `sudo` still lands the extension in the user data dir, and a hard
+failure is never reported as success.
 
 Coverage: SRT formatting (float-drift-safe rounding, rollover, clamp),
 cue wrapping + timing cleanup (word-boundary/balanced/CJK, min duration/gap),

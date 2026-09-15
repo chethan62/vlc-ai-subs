@@ -17,9 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/.local/share/vlc-ai-subs"
 EXT_DIR="$HOME/.local/share/vlc/lua/extensions"
 
-GREEN=$'\033[32m'; CYAN=$'\033[36m'; NC=$'\033[0m'
+GREEN=$'\033[32m'; CYAN=$'\033[36m'; YELLOW=$'\033[33m'; NC=$'\033[0m'
 log() { printf "  ${CYAN}→${NC} %s\n" "$*"; }
 ok()  { printf "  ${GREEN}✓${NC} %s\n" "$*"; }
+warn() { printf "  ${YELLOW}!${NC} %s\n" "$*"; }
 
 echo ""
 echo "  vlc-ai-subs installer"
@@ -39,8 +40,12 @@ if [ -f "$EXT_DIR/aisubs.lua" ]; then
     ok "Plugin already installed — skipping setup.sh"
 else
     log "Installing VLC extension..."
-    "$SCRIPT_DIR/setup.sh" --install
-    ok "Plugin installed"
+    if "$SCRIPT_DIR/setup.sh" --install; then
+        ok "Plugin installed"
+    else
+        warn "VLC extension NOT installed — copy aisubs.lua into VLC's lua/extensions"
+        warn "folder yourself (README → Manual install), then restart VLC"
+    fi
 fi
 
 # ── 2. WhisperX backend (Python 3.12 venv — WhisperX needs <3.14) ──
@@ -49,9 +54,13 @@ if [ -x "$INSTALL_DIR/venv-whisperx/bin/python" ] && \
     ok "WhisperX already installed"
 else
     log "Installing WhisperX (Python 3.12 venv, this takes a few minutes)..."
-    uv venv --python 3.12 "$INSTALL_DIR/venv-whisperx"
-    uv pip install --python "$INSTALL_DIR/venv-whisperx/bin/python" whisperx
-    ok "WhisperX ready"
+    if uv venv --python 3.12 "$INSTALL_DIR/venv-whisperx" && \
+       uv pip install --python "$INSTALL_DIR/venv-whisperx/bin/python" whisperx; then
+        ok "WhisperX ready"
+    else
+        warn "WhisperX install failed — the multi-language engine will be missing"
+        warn "Retry with: uv venv --python 3.12 $INSTALL_DIR/venv-whisperx"
+    fi
 fi
 
 # ── 3. Parakeet backend (recommended for English media) ──
@@ -63,21 +72,30 @@ if [ -f "$HOME/.local/share/sherpa-onnx/models/sherpa-onnx-nemo-parakeet-tdt-0.6
     ok "Parakeet model already installed"
 else
     log "Installing Parakeet model (~600MB download)..."
-    bash "$SCRIPT_DIR/install-parakeet-model.sh"
-    ok "Parakeet model ready"
+    if bash "$SCRIPT_DIR/install-parakeet-model.sh"; then
+        ok "Parakeet model ready"
+    else
+        warn "Parakeet model NOT installed — retry: bash install-parakeet-model.sh"
+    fi
 fi
 if [ "${VSCL_AISUBS_PARAKEET_V3:-0}" = "1" ]; then
     log "Installing multilingual Parakeet v3 (25 European languages, ~640MB)..."
-    bash "$SCRIPT_DIR/install-parakeet-model.sh" v3
-    ok "Parakeet v3 ready"
+    if bash "$SCRIPT_DIR/install-parakeet-model.sh" v3; then
+        ok "Parakeet v3 ready"
+    else
+        warn "Parakeet v3 NOT installed — retry: bash install-parakeet-model.sh v3"
+    fi
 fi
 if [ -x "$INSTALL_DIR/venv-whisperx/bin/python" ] && \
    "$INSTALL_DIR/venv-whisperx/bin/python" -c "import sherpa_onnx" 2>/dev/null; then
     ok "sherpa-onnx already installed"
 else
     log "Installing sherpa-onnx runtime..."
-    uv pip install --python "$INSTALL_DIR/venv-whisperx/bin/python" sherpa-onnx
-    ok "sherpa-onnx ready"
+    if uv pip install --python "$INSTALL_DIR/venv-whisperx/bin/python" sherpa-onnx; then
+        ok "sherpa-onnx ready"
+    else
+        warn "sherpa-onnx install failed — the Parakeet engine will be missing"
+    fi
 fi
 
 # NLLB-200 model (translate cascade) — ~1.3 GB, CC-BY-NC-4.0. Optional: a

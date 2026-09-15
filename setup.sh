@@ -27,9 +27,14 @@ install_to() {
     local needs_sudo="${2:-false}"
 
     if [ "$needs_sudo" = "true" ]; then
-        # System paths: only install if directory already exists (avoid sudo mkdir)
-        if [ -d "$dir" ]; then
-            sudo cp "$SRC" "$dir/aisubs.lua" 2>/dev/null && ok "$dir" && INSTALLED=1
+        # System paths: only install if directory already exists (avoid sudo mkdir).
+        # Deliberately non-fatal: the old `sudo cp … && ok … && INSTALLED=1` form
+        # aborted the script under `set -e` when sudo was denied (no rights, no
+        # password, or the README's non-interactive `curl … | bash`), which ran
+        # BEFORE the user-level fallback — so nothing was installed at all.
+        if [ -d "$dir" ] && sudo cp "$SRC" "$dir/aisubs.lua" 2>/dev/null; then
+            ok "$dir"
+            INSTALLED=1
         fi
     else
         # User paths: create directory if needed, then install
