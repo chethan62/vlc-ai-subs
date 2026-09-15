@@ -21,7 +21,7 @@ or real-time on-screen captions.
 | **Cancel + memory** | Cancel a running transcription; the dialog remembers engine/model/language/task/mode |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
-| **VLC 3.x & 4.x** | Works with current and next-gen VLC |
+| **VLC 3.x now, 4.x-ready** | Every Lua API it uses is present in VLC 4.0's source (checked); no 4.0 build has been run yet |
 | **Cross-platform** | Linux, macOS, Windows (native, snap, flatpak) |
 
 ## Quick Start
@@ -223,6 +223,31 @@ backends/
 ```
 
 **JSONL contract (stdout):** `{"type":"status","msg":...}`, `{"type":"sub","i":N,"start":S,"end":E,"text":...}`, `{"type":"done","segments":N,"srt_path":...}`, `{"type":"error","msg":...}`. Lua polls the mirror file (argv[5]) for progress.
+
+## VLC 4.0 readiness
+
+VLC 4.0 is still unreleased (VideoLAN's release page lists 3.0.x and older) and
+its Linux nightlies are snap-only, so this plugin is **verified on VLC 3.x**.
+What *can* be checked without a 4.0 binary is the Lua API it depends on — done
+against VLC master (4.0-dev) on 2026-09-15:
+
+| API the plugin uses | in VLC master |
+|---|---|
+| `vlc.input.item()`, `vlc.input.add_subtitle()` | present (`modules/lua/libs/input.c`) |
+| `vlc.osd.message(text, chan?, pos?, dur?)`, `channel_register()` | present, all args optional |
+| `vlc.config.userdatadir()` | present (`configuration.c`) |
+| `vlc.dialog` and every widget used here | present (`dialog.c`) |
+| `vlc.object.input()`, `vlc.var.set()` | present (`objects.c`, `variables.c`) |
+| Lua extensions themselves | still supported (`extension.c`, `extension_thread.c`) |
+
+There is **no `vlc.player` table** in 3.0.x or in master, though several plugins
+try one. Those calls survive only as a last-ditch `pcall`; `vlc.input.*` is the
+path that runs. (The test harness used to stub `vlc.player.*`, which is how the
+fiction went unnoticed — it now models the real API and fails if the plugin
+depends on anything else.)
+
+So: 3.x works today, and 4.0 should load unchanged — but that is a source-level
+claim, not a run against a 4.0 build, and it is described as such here.
 
 ## Testing
 

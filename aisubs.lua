@@ -1,7 +1,8 @@
 --[[
 vlc-ai-subs — VLC extension for AI-powered subtitle generation.
 
-Compatible with VLC 3.x and VLC 4.x.
+Compatible with VLC 3.x. VLC 4.x uses the same Lua API (verified against VLC
+master on 2026-09-15); no 4.0 build has been run against it yet.
 
 Engines: Auto (Parakeet for English, WhisperX otherwise) / WhisperX / Parakeet.
 
@@ -28,9 +29,10 @@ function descriptor()
         url = "https://github.com/chethan62/vlc-ai-subs",
         shortdesc = "AI subtitle generator (WhisperX/Parakeet)",
         description = "Generate subtitles using local AI. "
-            .. "WhisperX (multilingual) or Parakeet (English, fastest). "
+            .. "WhisperX (multilingual), Parakeet (v2 English / v3 25 languages) "
+            .. "or whisper.cpp (Vulkan). "
             .. "Real-time OSD or generate-and-load SRT. "
-            .. "Compatible with VLC 3.x and 4.x.",
+            .. "Compatible with VLC 3.x (4.x: same Lua API).",
         capabilities = {"menu"},
     }
 end
@@ -310,28 +312,54 @@ end
 
 ----------------------------------------------------------------
 -- VLC version compatibility (3.x / 4.x)
+-- Verified against VLC master (= 4.0-dev) on 2026-09-15, modules/lua/libs:
+--   * vlc.input.item() / vlc.input.add_subtitle()  present (input.c)
+--   * vlc.osd.message(text, chan?, pos?, dur?)     present, all args optional
+--   * vlc.config.userdatadir() (+cachedir, configdir, homedir)  present
+--   * vlc.dialog + the widgets used here           present (dialog.c)
+--   * vlc.object.input() / vlc.var.set()           present (objects.c/variables.c)
+--   * Lua extensions themselves still load         (extension.c, extension_thread.c)
+--   * there is NO "player" table / no player.c in either 3.0.x or master, so the
+--     vlc.player.* attempts below are last-ditch only — the input.* calls are the
+--     ones that run. (The test harness once stubbed vlc.player.*, which is how the
+--     fiction survived: it exercised a path no real VLC has.)
+-- Not yet executed against a real 4.0 build (4.0 is unreleased; Linux nightlies
+-- are snap-only).
 ----------------------------------------------------------------
 
 function get_input_item()
     local ok, item
-    ok, item = pcall(function() return vlc.player.item() end)
-    if ok and item then return item end
+    -- vlc.input.item() is the API both 3.0.x and master expose (master has no
+    -- player.c); keep the vlc.player form as a last-ditch attempt.
     ok, item = pcall(function() return vlc.input.item() end)
+    if ok and item then return item end
+    ok, item = pcall(function() return vlc.player.item() end)
     if ok and item then return item end
     return nil
 end
 
 function add_subtitle_track(srt_path)
     local ok
-    ok = pcall(function() vlc.player.add_subtitle(srt_path) end)
-    if ok then return true end
+    -- vlc.input.add_subtitle exists in VLC 3.0.x AND in master (4.0-dev) —
+    -- verified in modules/lua/libs/input.c on 2026-09-15; there is no
+    -- vlc.player table in either, so it is only a last-ditch attempt below.
     ok = pcall(function() vlc.input.add_subtitle(srt_path) end)
     if ok then return true end
-    ok = pcall(function()
-        local input = vlc.object.input()
-        if input then vlc.var.set(input, "sub-file", srt_path) end
+    ok = pcall(function() vlc.player.add_subtitle(srt_path) end)
+    if ok then return true end
+    -- Setting the input variable needs a real input; without one this used to
+    -- return true anyway (the pcall "succeeded" at doing nothing), so callers
+    -- were told the subtitles loaded when nothing had happened.
+    local input
+    pcall(function()
+        local obj = vlc.object.input()
+        if obj then input = obj end
     end)
-    return ok
+    if input then
+        ok = pcall(function() vlc.var.set(input, "sub-file", srt_path) end)
+        if ok then return true end
+    end
+    return false
 end
 
 function register_osd()
