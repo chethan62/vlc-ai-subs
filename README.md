@@ -17,7 +17,7 @@ or real-time on-screen captions.
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
 | **Two modes** | Generate & Load SRT (default) or OSD captions (Real-time OSD — each cue is pushed to the OSD as it is produced) |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
-| **Readable cues** | Text is wrapped to ≤2 lines × 42 chars (CJK-aware) with min-duration and gap cleanup |
+| **Readable cues** | Text wrapped to ≤2 lines × 42 chars (CJK-aware); cues over 7 s split at sentence boundaries; min-duration and gap cleanup |
 | **Cancel + memory** | Cancel a running transcription; the dialog remembers engine/model/language/task/mode |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
@@ -69,7 +69,7 @@ Then:
 
 | Engine | Languages | Word timing | Speed | License |
 |---|---|---|---|---|
-| **WhisperX** (default) | 99 (faster-whisper + wav2vec2 alignment) | wav2vec2 forced alignment | ~2–4× realtime (medium, GPU-dependent) | BSD-2 + MIT |
+| **WhisperX** (default) | 99 (faster-whisper + wav2vec2 alignment) | wav2vec2 forced alignment (tightens cue times) | 2–4× realtime on a healthy GPU; **0.6× measured here** | BSD-2 + MIT |
 | **Parakeet** (opt-in: `VSCL_AISUBS_BACKEND=parakeet`) | English (v2) or 25 European languages (v3) | **native TDT word timestamps** (no aligner) | **~10× faster, CPU-friendly** | CC-BY-4.0 |
 | **whisper.cpp** (Vulkan: AMD/Intel too) | 99 (whisper.cpp / ggml) | segment-level (no aligner) | GPU via Vulkan, CPU fallback | MIT |
 
@@ -78,6 +78,12 @@ Pick **Parakeet** in the dialog for English films — self-reported mean WER
 whisper-large-v3 at 7.44% on a comparable English eval), ~0.7 GB int8 model,
 and its transducer decoder structurally avoids the hallucination loops
 Whisper hits on music/silence.
+
+Speeds measured on this box (EC-capped 300 MHz GTX 1650, 4 GB) rather than
+quoted: **Parakeet 4m51s for a 47.5-min episode (~9.8× realtime, CPU)** versus
+**WhisperX 8m11s for 5 min (~0.6× realtime, large-v3-turbo on GPU)** — i.e. on a
+capped or small GPU Parakeet is roughly 16× faster per minute of audio, and the
+whisper.cpp/Vulkan path measured 22.9s per 60s (~2.6× realtime).
 
 Two variants, same 0.6B TDT architecture and the same native word timestamps:
 
@@ -141,9 +147,21 @@ back to CPU when no device is present.
   large ≥ 8 GB, **large-v3-turbo ≥ 4 GB** (the 4 GB sweet spot — near-large
   accuracy at ~4× the speed), small ≥ 2 GB; CPU falls back to RAM-based sizing.
 - To force CPU: `VSCL_AISUBS_DEVICE=cpu vlc`.
-- WhisperX's wav2vec2 word alignment runs on **CUDA only**; on CPU the
-  segments keep faster-whisper's timestamps (no alignment pass). Parakeet's
-  native TDT word timestamps work on CPU as well.
+- WhisperX's wav2vec2 word alignment runs on **CUDA only** (one segment per pass
+  — its API has no batch knob) and does two things: it re-segments a long
+  transcript into cue-sized pieces, and its word timings **tighten each cue's
+  start and end** to where speech actually begins and ends. On a translated run
+  the words no longer match the audio, so the pass is skipped; if it fails, the
+  status line names the real cause (e.g. a CUDA OOM) instead of blaming the
+  language model.
+- Without that pass — CPU, AMD/Intel, a translated run, whisper.cpp — Whisper
+  hands back whole exchanges as a single segment: measured on a real episode,
+  **8 cues for 5 minutes, the longest 29 s**. So `core/cues.py` splits any cue
+  longer than 7 s at its own sentence boundaries, sharing the time in proportion
+  to each piece's length (no word timings needed). On that same audio this gives
+  40–52 cues, in line with the 54 the GPU alignment produced. No word is ever
+  lost, a sentence with no terminator stays long, and a fragment too brief to
+  read is folded into its neighbour.
 - WhisperX decode is hardened for movies (beam 1, no cross-window
   conditioning, silence/hallucination gates) — research-backed, see
   `.research/final_report.md` §2.2.

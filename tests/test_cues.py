@@ -10,10 +10,12 @@ import pytest
 
 from core.cues import (
     CJK_LINE_CHARS,
+    MAX_CUE_SECONDS,
     MAX_LINE_CHARS,
     apply_quality,
     is_cjk,
     normalize,
+    split_long_cue,
     wrap,
 )
 
@@ -143,3 +145,90 @@ def test_quality_wraps_text_it_is_given():
     out = apply_quality([{"start": 0.0, "end": 5.0, "text": text}])
     assert "\n" in out[0]["text"]
     assert out[0]["text"].replace("\n", " ") == text
+
+
+# ── over-long cues: split at sentence boundaries ───────────────────────────
+# Only the CUDA alignment pass re-segments a Whisper transcript; without it
+# (CPU, AMD/Intel, a translated run, whisper.cpp) whole exchanges arrive as one
+# segment. This is the real output of a 5-minute episode excerpt (large-v3-turbo
+# on CUDA, alignment skipped because of a bug): 8 cues for 5 minutes, the
+# longest 29 s — unreadable. Splitting needs no word timings if the split
+# follows the text's own sentence endings and shares out the time by length.
+
+REAL_GIANT_CUES = [
+    {"start": 23.757, "end": 24.757, "text": "Lucky!"},
+    {"start": 62.941, "end": 92.017, "text": (
+        "You kept your dad's lighter? Yes. You okay? Ask me again tomorrow. Hey, "
+        "come on. Come on, come on, come on. The hard part's over. We pulled it off."
+    )},
+    {"start": 92.658, "end": 121.278, "text": (
+        "I don't know. Something feels off. Well, it's because you're hardwired to "
+        "feel that way. Yes, but it doesn't mean I'm wrong. Hey, look. Everything is "
+        "going according to plan. Until it isn't. You know what I think? You know "
+        "what I'm gonna say? Mm-hmm. You gotta get them out of your head. Yeah. "
+        "Maybe. What's he saying?"
+    )},
+    {"start": 156.395, "end": 174.468, "text": (
+        "Okay. Besides, America's kind of over anyway. Well, it is for us. We're out "
+        "of here, baby. Okay, let's do it. Let's finish getting dressed. Let's go "
+        "downstairs. I am dressed. You're the one that needs to get dressed. You are "
+        "dressed. You look amazing. What am I doing? Five minutes. Can you grab my "
+        "watch? Yeah."
+    )},
+]
+
+
+def test_split_long_cue_shares_the_span_in_proportion_to_length():
+    seg = {"start": 0.0, "end": 20.0, "text": "Short one. " + "A much longer sentence here."}
+    out = split_long_cue(seg)
+    assert [p["text"] for p in out] == ["Short one.", "A much longer sentence here."]
+    assert out[0]["start"] == 0.0 and out[-1]["end"] == 20.0
+    assert out[0]["end"] == out[1]["start"], "pieces must stay contiguous"
+    # the longer half gets the longer share of the 20 s
+    assert (out[0]["end"] - out[0]["start"]) < (out[1]["end"] - out[1]["start"])
+
+
+def test_split_long_cue_leaves_short_and_unsplittable_cues_alone():
+    short = {"start": 0.0, "end": 4.0, "text": "One. Two. Three."}
+    assert split_long_cue(short) == [short]
+    one_sentence = {"start": 0.0, "end": 20.0, "text": "No terminator in this one at all"}
+    assert split_long_cue(one_sentence) == [one_sentence]
+
+
+def test_split_long_cue_folds_away_unreadable_fragments():
+    """A 0.2 s flicker cannot be read — and its time cannot be extended, because
+    the next piece starts where it ends. Fold it into a neighbour instead."""
+    seg = {"start": 0.0, "end": 30.0,
+           "text": "A reasonably long opening line here. Mm-hmm. And a closing line that is also long."}
+    out = split_long_cue(seg)
+    assert all(p["end"] - p["start"] >= 1.0 for p in out), [p["text"] for p in out]
+    assert "Mm-hmm." in " ".join(p["text"] for p in out)   # merged, never dropped
+
+
+def test_split_long_cue_handles_cjk_terminators():
+    seg = {"start": 0.0, "end": 20.0, "text": "你好，很高兴见到你。我也是，很久不见了。今天天气很好。"}
+    out = split_long_cue(seg)
+    assert len(out) == 3
+    assert "".join(p["text"] for p in out) == seg["text"]
+
+
+def test_real_giant_cues_become_readable_without_losing_a_word():
+    out = apply_quality([dict(c) for c in REAL_GIANT_CUES])
+    durations = [c["end"] - c["start"] for c in out]
+    assert len(out) >= 25, f"8 cues for 5 minutes should split into many: got {len(out)}"
+    assert max(durations) <= 13.5, f"longest cue still {max(durations):.1f}s"
+    assert sum(1 for d in durations if d > MAX_CUE_SECONDS) <= 3, "only unsplittable single sentences may stay long"
+    assert min(durations) >= 0.9, f"no cue flashes past unreadably (min {min(durations):.3f}s)"
+    # the deliverable is the text: every word survives, in order
+    assert (" ".join(c["text"] for c in out).replace("\n", " ").split()
+            == " ".join(c["text"] for c in REAL_GIANT_CUES).split())
+    assert all(out[i]["end"] <= out[i + 1]["start"] + 1e-9 for i in range(len(out) - 1))
+    assert out[0]["start"] >= REAL_GIANT_CUES[0]["start"]
+
+
+def test_short_segments_are_untouched_by_the_splitter():
+    """The engines whose segments are already short must not be re-cut."""
+    segs = [{"start": 0.0, "end": 3.0, "text": "Hello there."},
+            {"start": 3.2, "end": 6.0, "text": "How are you?"}]
+    out = apply_quality([dict(s) for s in segs])
+    assert [(c["start"], c["end"]) for c in out] == [(0.0, 3.0), (3.2, 6.0)]

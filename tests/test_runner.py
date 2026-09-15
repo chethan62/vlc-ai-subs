@@ -177,3 +177,115 @@ def test_runner_writes_srt_when_path_given(runner, monkeypatch, tmp_path):
     assert wanted.is_file()
     assert "hello" in wanted.read_text(encoding="utf-8")
     assert not (tmp_path / "clip.srt").exists()
+
+
+# ── alignment: the word timings must actually reach the cue times ──────────
+# Regression: whisperx.align() ran on CUDA and its output was thrown away —
+# only result["segments"] (segment-level times) was used, so the plugin paid a
+# GPU pass plus a wav2vec2 download for a feature the README advertises as
+# "word-level timing". The align branch was also unreachable in tests, because
+# the dev venv has no torch and device therefore always resolved to "cpu".
+
+def _fake_cuda(monkeypatch, calls=None, align_raises=None, lang="en"):
+    """Fake whisperx + torch so the CUDA align path is exercised."""
+    import types
+
+    calls = calls if calls is not None else []
+
+    def _load_model(*a, **k):
+        class _M:
+            def transcribe(self, path, language=None, task=None):
+                return {"language": lang, "segments": [{"start": 0.0, "end": 3.0, "text": "hello there"}]}
+        return _M()
+
+    def _load_align_model(language_code=None, device=None):
+        calls.append(("load_align_model", language_code))
+        return ("align-model", {"lang": language_code})
+
+    def _align(transcript, model, align_model_metadata, audio, device,
+               interpolate_method="nearest", return_char_alignments=False,
+               print_progress=False, combined_progress=False, progress_callback=None):
+        # Signature mirrors whisperx.align() exactly (verified against the
+        # installed venv). A stub that accepts **kwargs hides real breakage:
+        # passing an unsupported batch_size=1 used to sail through this test
+        # while the real runner silently skipped alignment and emitted
+        # segment-level cues.
+        calls.append(("align", return_char_alignments))
+        if align_raises is not None:
+            raise align_raises
+        return {"segments": [{
+            "start": 0.45, "end": 2.90, "text": "hello there",   # align's tightened span
+            "words": [
+                {"word": "hello", "start": 0.45, "end": 1.10},
+                {"word": "there", "start": 1.15, "end": 2.30},
+                {"word": ",", "start": None, "end": None},  # punctuation has no timing
+            ],
+        }]}
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.SimpleNamespace(
+        load_model=_load_model, load_align_model=_load_align_model, align=_align,
+    ))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: True),
+    ))
+    return calls
+
+
+def test_cuda_run_aligns_with_one_segment_per_pass_and_uses_the_words(
+    runner, monkeypatch, tmp_path
+):
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"x")
+    wanted = tmp_path / "out.srt"
+    calls = _fake_cuda(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "turbo", "en", "transcribe", "m.txt", str(wanted)])
+
+    runner.main()
+
+    assert ("load_align_model", "en") in calls, "the align model must match the transcript language"
+    assert any(c[0] == "align" for c in calls), "the alignment must actually run"
+    srt = wanted.read_text(encoding="utf-8")
+    # align's own span (0.45-2.90), NOT the transcribed segment's (0.0-3.0):
+    # the alignment output is what the cue times come from.
+    assert "00:00:00,450 --> 00:00:02,900" in srt, srt
+
+
+def test_translated_run_skips_alignment(runner, monkeypatch, tmp_path, capsys):
+    """Aligning translated text against foreign audio is meaningless (the align
+    model maps sounds to text) — it must not load a model or burn GPU time."""
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"x")
+    calls = _fake_cuda(monkeypatch, lang="de")
+    # nllb_translate is imported inside main(), so it is a local name there — the
+    # fake has to go into sys.modules for the import to pick it up.
+    import types
+    monkeypatch.setitem(sys.modules, "nllb_translate", types.SimpleNamespace(
+        should_cascade=lambda task, env: False,
+    ))
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "turbo", "de", "translate", "m.txt", str(tmp_path / "o.srt")])
+
+    runner.main()
+
+    assert calls == [], f"no alignment for a translated run: {calls}"
+    assert "Word alignment" not in capsys.readouterr().out
+
+
+def test_alignment_oom_is_reported_as_such_and_the_run_still_finishes(
+    runner, monkeypatch, tmp_path, capsys
+):
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"x")
+    _fake_cuda(monkeypatch, align_raises=RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"))
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "turbo", "en", "transcribe"])
+
+    runner.main()
+
+    out = capsys.readouterr().out
+    assert "GPU out of memory" in out
+    assert "segment-level" in out          # says what the fallback means
+    assert "language model" not in out     # the old, wrong diagnosis
+    assert '"type": "done"' in out         # a skipped alignment is not a failure
+
+
+def capsys_out(_monkeypatch):
+    return ""

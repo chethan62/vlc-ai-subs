@@ -8,6 +8,9 @@ is written:
   (CJK scripts need far fewer characters per line — ``CJK_LINE_CHARS``)
 * breaks at word boundaries for space-delimited scripts, anywhere in CJK
 * cue timings clamped to at least ``MIN_DURATION``, spaced by ``MIN_GAP``
+* a cue that would stay on screen longer than ``MAX_CUE_SECONDS`` is split at
+  its sentence boundaries, its time shared out in proportion to each piece's
+  length (see :func:`split_long_cue`)
 
 Pure list-in/list-out, no I/O: the runners call :func:`apply_quality` and the
 same behaviour is unit-testable in the dev venv.
@@ -27,8 +30,13 @@ MAX_LINES = 2
 MIN_DURATION = 1.0
 MIN_GAP = 0.08  # two frames at 25 fps — avoid back-to-back cue flicker
 MIN_VISIBLE = 0.2
+# One cue on screen longer than this is past what a viewer can hold in one
+# glance (BBC/Netflix guidance is ~7 s), so it is split at sentence boundaries.
+MAX_CUE_SECONDS = 7.0
 
 _WS = re.compile(r"\s+")
+# Sentence ends: ASCII + CJK terminators (CJK needs no trailing space).
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?\u2026])\s+|(?<=[\u3002\uff01\uff1f\uff0e])")
 # CJK ideographs, kana, hangul + CJK punctuation: no spaces to break on.
 _CJK = re.compile(
     "[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
@@ -132,29 +140,85 @@ def wrap(text: str, max_chars: int | None = None, max_lines: int = MAX_LINES) ->
     return _join_units(units[:split], cjk) + "\n" + _join_units(units[split:], cjk)
 
 
+def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS) -> list[dict]:
+    """Split one over-long cue at sentence boundaries; returns one or more cues.
+
+    Without CUDA alignment to re-segment the transcript (CPU, AMD/Intel, or a
+    translated run) Whisper hands back whole exchanges as single segments —
+    measured on a real episode: 8 cues for 5 minutes, the longest showing 29 s
+    of dialogue at once. Word timings are not needed for this: split where the
+    text says a sentence ended and share the cue's span in proportion to each
+    piece's length, which tracks speech duration closely enough to stay inside
+    the cue's real time. A cue with nothing to split on (no terminator) is left
+    exactly as it was, and a fragment too brief to read is folded back into its
+    neighbour rather than flashing on and off.
+    """
+    duration = seg["end"] - seg["start"]
+    if duration <= max_seconds:
+        return [seg]
+
+    pieces = [p.strip() for p in _SENTENCE_BREAK.split(normalize(seg.get("text", "")))]
+    pieces = [p for p in pieces if p]
+    if len(pieces) < 2:
+        return [seg]
+
+    # Fold in fragments that would be too brief to read on their own: "Mm-hmm."
+    # at 0.2 s is a flicker, and its time cannot be extended into the next piece.
+    total_chars = sum(len(p) for p in pieces) or 1
+    merged: list[str] = []
+    for piece in pieces:
+        share = duration * len(piece) / total_chars
+        if merged and share < MIN_DURATION:
+            merged[-1] = f"{merged[-1]} {piece}"
+        else:
+            merged.append(piece)
+    # A too-brief first piece has no predecessor to fold into — give it to the
+    # piece that follows instead.
+    if len(merged) > 1 and duration * len(merged[0]) / total_chars < MIN_DURATION:
+        merged[1] = f"{merged[0]} {merged[1]}"
+        merged.pop(0)
+    pieces = merged
+
+    weights = [len(p) for p in pieces]
+    total = sum(weights) or 1
+    out: list[dict] = []
+    at = seg["start"]
+    for i, (piece, weight) in enumerate(zip(pieces, weights)):
+        end = seg["end"] if i == len(pieces) - 1 else at + duration * weight / total
+        out.append({"start": at, "end": end, "text": piece})
+        at = end
+    return out
+
+
 def apply_quality(
     segments: list[dict],
     max_chars: int | None = None,
     max_lines: int = MAX_LINES,
     min_duration: float = MIN_DURATION,
     min_gap: float = MIN_GAP,
+    max_cue_seconds: float = MAX_CUE_SECONDS,
 ) -> list[dict]:
-    """Wrap cue text and clean up timings; returns new dicts.
+    """Split over-long cues, wrap cue text, clean up timings; returns new dicts.
 
+    - cues longer than *max_cue_seconds* → split at sentence boundaries
     - text → :func:`wrap` (empty cues are dropped)
     - ``end - start`` extended up to *min_duration* (never into the next cue)
     - cues pushed apart by *min_gap*, keeping at least *min_visible* on screen
-    Long cues are left long: splitting them needs per-word timings that only
-    some engines provide, and chopping display time is worse than a 9 s cue.
+    A single sentence longer than *max_cue_seconds* stays long: it cannot be
+    split without word timings, and chopping display time mid-sentence is worse
+    than an over-long cue.
     """
     out: list[dict] = []
     for seg in segments:
-        text = wrap(seg.get("text", ""), max_chars, max_lines)
+        text = normalize(seg.get("text", ""))
         if not text:
             continue
         start = max(0.0, float(seg.get("start", 0.0)))
         end = max(start, float(seg.get("end", start)))
-        out.append({"start": start, "end": end, "text": text})
+        for piece in split_long_cue({"start": start, "end": end, "text": text}, max_cue_seconds):
+            wrapped = wrap(piece["text"], max_chars, max_lines)
+            if wrapped:
+                out.append({"start": piece["start"], "end": piece["end"], "text": wrapped})
 
     for i, seg in enumerate(out):
         nxt = out[i + 1] if i + 1 < len(out) else None

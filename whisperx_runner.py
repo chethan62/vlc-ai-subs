@@ -62,6 +62,18 @@ def model_cache_dir() -> str | None:
     return cache or None
 
 
+# whisperx.align() processes ONE segment per pass (its real signature has no
+# batch knob — verified in the installed venv on 2026-09-15, after passing
+# batch_size=1 raised TypeError and silently cost the alignment). No VRAM
+# batching to tune here: 54 segments aligned in ~2 s on this box's 4 GB card.
+# The default batch the research note worried about belongs to
+# model.transcribe(), which runs fine at its default here.
+#
+# Its returned segments already carry word-tightened start/end (measured: cue
+# times identical to a run with an extra refinement pass bolted on, 54/54 cues),
+# so consume them directly — no second refinement step.
+
+
 def hardened_asr_options() -> dict:
     """Research-backed decode options (see .research/final_report.md §2.2).
 
@@ -199,25 +211,38 @@ def main():
     # segments, and NLLB-translated output may itself match an English phrase.
     result["segments"] = filter_segments(result.get("segments", []))
 
-    # 3. Align (word-level timestamps)
-    if device == "cuda" and result.get("segments"):
+    # 3. Align (word-level timestamps) and fold them into the cue times.
+    #
+    # The align model maps SOUNDS to text, so it only means anything while the
+    # segments still hold the transcript. After a translation they hold English
+    # while the audio is still in the source language — the pass would cost a GPU
+    # run plus a model download and yield nonsense timings. Skip it, and refine
+    # otherwise.
+    src_lang = (result.get("language") or language or "en").lower()
+    have_transcript = task == "transcribe" or src_lang.startswith("en")
+    if device == "cuda" and have_transcript and result.get("segments"):
         try:
-            # After any translate path the transcript is English — the align
-            # model must match the transcript, not the source language.
-            align_lang = "en" if task == "translate" else (result.get("language") or language or "en")
             align_model, metadata = whisperx.load_align_model(
-                language_code=align_lang, device=device,
+                language_code=src_lang, device=device,
             )
-            result = whisperx.align(
+            aligned = whisperx.align(
                 result["segments"], align_model, metadata,
                 media_path, device, return_char_alignments=False,
             )
+            result["segments"] = aligned.get("segments", [])
             emit({
                 "type": "status",
-                "msg": f"WhisperX: word alignment done (+{time.time() - _t0:.1f}s)",
+                "msg": f"WhisperX: word alignment done, cue times refined (+{time.time() - _t0:.1f}s)",
             })
-        except Exception:
-            emit({"type": "status", "msg": "Alignment skipped (may need different language model)"})
+        except Exception as exc:
+            # Say what actually went wrong: this used to blame the language
+            # model even when the real cause was a CUDA OOM, and the alignment's
+            # word timings are what tightens the cues below.
+            reason = "GPU out of memory" if "out of memory" in str(exc).lower() else f"{type(exc).__name__}"
+            emit({
+                "type": "status",
+                "msg": f"Word alignment skipped ({reason}) — cue times stay segment-level",
+            })
 
     # 4. Wrap the cue text (broadcast-style line breaks) and clean the timing
     # gaps before emitting — the SRT and the OSD feed share this text.
