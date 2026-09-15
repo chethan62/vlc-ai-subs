@@ -262,10 +262,28 @@ Two details matter for *loading*, and both check out the same way:
   `~/.local/share/vlc/lua/extensions/` remains correct. (4.0 adds zip-packaged
   `.vle` extensions as an extra format; the plain `.lua` file still works.)
 
-**Why no 4.0 run in this repo's verification:** VideoLAN's `master-daily` PPA
-(their only 4.0 channel that isn't a snap) currently reports *Failed to build*
-for `vlc` on amd64, and the Linux nightlies are snap-only. A container with the
-distribution package installs 3.0.x instead, so it would prove nothing about 4.0.
+**How far the 4.0 claim was pushed here:** no Linux 4.0 binary is obtainable
+(VideoLAN's `master-daily` PPA reports *Failed to build* for `vlc`, and the Linux
+nightlies are snap-only), so a real 4.0.0-dev **win64** build was run under Wine
+instead — revision `4.0.0-dev-39018-g86363b2f28`, built 2026-09-15:
+
+- it starts, loads 597 plugin modules including the Lua plugin (`--enable-lua` in
+  the build's own configure line), and resolves the user script dir exactly as
+  the source predicts (`C:\users\<user>\AppData\Roaming\vlc\lua\…`);
+- its Lua machinery runs from that layout: the log shows the batch scan
+  (`Trying Lua scripts in …`) executing the build's shipped `.luac` scripts —
+  the same code path extensions go through;
+- it ships an extension of its own (`lua/extensions/VLSub.luac`), so the
+  extension folder and compiled-script support are exercised by the build.
+
+What could **not** be triggered headlessly is this plugin's own registration:
+4.0 creates the extensions manager **lazily from its Qt UI** — no scan happens at
+startup, while playing media, or under `-I dummy`; it appears only when the GUI's
+Extensions view is opened, which needs GUI automation. So the honest summary is:
+in a real 4.0 build the APIs, the script directories, the scan environment and
+the Lua runtime are all verified present and working; this plugin's own
+registration in 4.0 is *inferred* from that (plus its registration in 3.0.23),
+not observed.
 
 ## Testing
 

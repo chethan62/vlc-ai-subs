@@ -334,8 +334,11 @@ end
 --     vlc.player.* attempts below are last-ditch only — the input.* calls are the
 --     ones that run. (The test harness once stubbed vlc.player.*, which is how the
 --     fiction survived: it exercised a path no real VLC has.)
--- Not yet executed against a real 4.0 build (4.0 is unreleased; Linux nightlies
--- are snap-only, and VideoLAN's master-daily PPA currently fails to build vlc).
+-- Not yet executed against a real 4.0 build here — but a 4.0.0-dev win64 build
+-- WAS run under Wine (2026-09-15): its Lua plugin loads, the batch scan runs from
+-- the same user/install dirs (executing the build's own .luac scripts), and it
+-- ships lua/extensions/VLSub.luac — while 4.0 creates the extensions manager
+-- LAZILY from its Qt UI, so no headless run can trigger this plugin's own scan.
 -- Scan-time behaviour checked too: 4.0's ScanLuaCallback still evaluates the file
 -- in a bare luaL_newstate() (only a dummy `require`, no io/os/math), i.e. the
 -- same restriction as 3.0 — which the top level of this file is written for.
