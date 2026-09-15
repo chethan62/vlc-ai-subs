@@ -39,6 +39,9 @@ chmod +x "$SB/bin/uv" "$SB/bin/vlc" "$SB/bin/sudo" "$SB/nvidia-smi"
 
 fresh_repo() {
     rm -rf "$SB/repo" && cp -r "$REPO" "$SB/repo" && rm -rf "$SB/repo/.git"
+    # plant a stale bytecode cache, as a working tree has: the installer must not
+    # copy it next to the sources in the install dir
+    mkdir -p "$SB/repo/core/__pycache__" && printf 'stale\n' > "$SB/repo/core/__pycache__/blocklist.cpython-312.pyc"
     for s in install-whisper-cpp.sh install-parakeet-model.sh install-nllb-model.sh install-m2m-model.sh; do
         printf '#!/usr/bin/env bash\necho "[stub %s] $*" >> %s\nexit ${STUB_FAIL:-0}\n' "$s" "$CALLS" > "$SB/repo/$s"
         chmod +x "$SB/repo/$s"
@@ -57,6 +60,8 @@ install_sh() {
 prepare_home() { rm -rf "$SB/home" && mkdir -p "$SB/home"; }
 run() { prepare_home; install_sh "$@"; }
 have_extension() { [ -f "$SB/home/.local/share/vlc/lua/extensions/aisubs.lua" ]; }
+have_no_pycache() { [ ! -d "$SB/home/.local/share/vlc-ai-subs/core/__pycache__" ] \
+                    && [ ! -d "$SB/home/.local/share/vlc-ai-subs/backends/__pycache__" ]; }
 logs_contain()   { grep -qF "$1" "$SB/out.txt"; }
 stub_calls()     { grep -c 'stub install-whisper-cpp' "$CALLS" 2>/dev/null || true; }
 
@@ -67,6 +72,10 @@ fresh_repo; : > "$CALLS"; rm -f "$SB/bin/nvidia-smi"; rc=$(run)
 [ "$(stub_calls)" = 1 ] && pass "whisper.cpp (Vulkan) installed automatically" || bad "whisper.cpp not installed ($(stub_calls) calls)"
 have_extension && pass "extension installed into the user dir" || bad "extension missing"
 logs_contain "Install complete." && pass "reports completion" || bad "no completion line"
+# a stale repo __pycache__ must not be copied next to the sources (it can shadow
+# them — a stale blocklist.pyc once made a fixed module look broken)
+have_no_pycache && pass "no stale bytecode copied into the install dir" \
+                || bad "install dir carries __pycache__ (can shadow updated sources)"
 
 # ── 2. NVIDIA box: whisper.cpp is opt-in, not automatic ──────────────────────
 say "2. NVIDIA box (nvidia-smi present)"

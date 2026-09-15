@@ -184,6 +184,17 @@ def build_args(
         "-oj", "-of", out_prefix,           # JSON next to out_prefix
         "-t", str(threads or min(8, os.cpu_count() or 2)),
         "-np",                              # no per-token prints
+        # Hardened decode — the same rules the WhisperX path applies (research
+        # §2.2), in whisper.cpp's flags. With the defaults, a real episode
+        # excerpt invented text over music and applause: "ten ten ten ten ten",
+        # "music playing" three times, "applause", "cheering", "sighs" — 283
+        # words where Parakeet heard 219.
+        "-mc", "0",   # no cross-window context: the repetition-loop driver.
+                      # whisper.cpp 1.9.2 has no --no-context; 0 context tokens is it.
+        "-nf",        # no temperature fallback — re-sampling at a higher
+                      # temperature invents text rather than admitting silence
+        "-bs", "1",   # beam 1, as the WhisperX path uses (and faster than 5)
+        "-sns",       # suppress non-speech tokens
     ]
     if device == "cpu":
         args.append("-ng")                  # -ng: disable the GPU (Vulkan)

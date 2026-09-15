@@ -139,6 +139,10 @@ log "Syncing plugin files..."
 mkdir -p "$INSTALL_DIR" "$EXT_DIR"
 cp -r "$SCRIPT_DIR/core" "$INSTALL_DIR/"       2>/dev/null || true
 cp -r "$SCRIPT_DIR/backends" "$INSTALL_DIR/"   2>/dev/null || true
+# Never ship bytecode: a __pycache__ copied next to updated sources can shadow
+# them (a stale core/__pycache__/blocklist.pyc made a fixed module look broken
+# during development). Sources only.
+rm -rf "$INSTALL_DIR/core/__pycache__" "$INSTALL_DIR/backends/__pycache__" 2>/dev/null || true
 cp "$SCRIPT_DIR/aisubs_whisper.py" "$INSTALL_DIR/"  2>/dev/null || true
 cp "$SCRIPT_DIR/whisperx_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/nllb_translate.py" "$INSTALL_DIR/"   2>/dev/null || true

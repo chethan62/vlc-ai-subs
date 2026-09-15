@@ -92,6 +92,18 @@ def test_build_args_uses_vulkan_by_default_and_ng_for_cpu(runner):
     assert "-tr" in translated and translated[translated.index("-l") + 1] == "fr"
 
 
+def test_build_args_hardens_the_decode_like_the_whisperx_path(runner):
+    """Without these the model invents text over music/applause: a real episode
+    excerpt produced "ten ten ten ten ten", "music playing" three times,
+    "applause", "cheering" and "sighs" — 283 words where Parakeet heard 219."""
+    args = runner.build_args("/bin/whisper-cli", "m.bin", "a.wav", "/tmp/o",
+                             "en", "transcribe")
+    assert args[args.index("-mc") + 1] == "0", "no cross-window context (loop driver)"
+    assert "-nf" in args, "no temperature fallback (invents text on silence)"
+    assert args[args.index("-bs") + 1] == "1", "beam 1, as WhisperX uses"
+    assert "-sns" in args, "suppress non-speech tokens"
+
+
 def test_vulkan_status_reports_the_device(runner):
     stderr = (
         "ggml_vulkan: Found 1 Vulkan devices:\n"
