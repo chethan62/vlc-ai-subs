@@ -113,8 +113,12 @@ local POLL_US     = 1000000  -- poll every 1 second (was 3s)
 -- Guarded: VLC's extension *scan* runs scripts in a bare lua state with no
 -- standard libs (math is nil) — an unguarded call here aborts registration.
 -- At runtime GetLuaState() opens all libs, so the seed then actually runs.
+-- math.floor matters: VLC 4.0 embeds Lua 5.4, whose randomseed rejects a
+-- float that has no integer representation ("bad argument #1 to 'randomseed'
+-- (number has no integer representation)") — which aborted the whole file at
+-- runtime. 3.0's Lua 5.1 has only floats and accepts either form.
 if math then
-    math.randomseed(os.time() * 1000 + (os.clock() * 1000) % 1000)
+    math.randomseed(math.floor(os.time() * 1000 + (os.clock() * 1000) % 1000))
 end
 
 ----------------------------------------------------------------
@@ -345,6 +349,15 @@ end
 -- VLC 4.0 also resolves the user script dir via VLC_USERDATA_DIR (unchanged) and
 -- additionally accepts zip-packaged ".vle" extensions.
 ----------------------------------------------------------------
+
+-- os.execute's result shape differs between the Lua versions VLC embeds:
+-- 3.0's Lua 5.1 returns the exit code number, 4.0's Lua 5.4 returns
+-- true/"exit"/code. Success is exactly `0` or `true` — nothing else should be
+-- treated as "launched" (the old inline `ok ~= 0` treated 5.4's `true` as a
+-- failure, and 5.1's non-zero codes as success).
+function launch_succeeded(res)
+    return res == true or res == 0
+end
 
 function get_input_item()
     local ok, item
@@ -783,8 +796,10 @@ function start_generation()
     -- Launch via os.execute with & for true non-blocking background.
     -- io.popen blocks in VLC's Lua sandbox; os.execute returns instantly.
     if is_windows() then
-        local ok = os.execute(cmd)
-        if ok ~= 0 then
+        -- See launch_succeeded(): os.execute's result changed shape between
+        -- VLC 3.0 (Lua 5.1: exit code) and 4.0 (Lua 5.4: true/"exit"/code).
+        local res = os.execute(cmd)
+        if not launch_succeeded(res) then
             set_status("Error: failed to launch Python. Check VLC logs.")
             return
         end
@@ -811,13 +826,17 @@ function start_generation()
 
     -- Estimate total time: rough RTF × audio duration (engine-dependent).
     -- Parakeet ≈ 10× realtime on CPU (0.1); WhisperX ≈ 0.3× GPU / 2× CPU.
+    -- math.ceil: this feeds string.format("%ds"/%d, …), and VLC 4.0's Lua 5.4
+    -- rejects a non-integral float there ("number has no integer
+    -- representation") — e.g. a 7 s clip × 0.1 = 0.7. 3.0's Lua 5.1 truncates
+    -- silently, so the difference only shows up on 4.0.
     local duration = get_media_duration()
     _poll_duration = duration or 0
     if _poll_duration > 0 then
         if engine == "parakeet" then
-            _poll_est_total = _poll_duration * 0.1
+            _poll_est_total = math.ceil(_poll_duration * 0.1)
         else
-            _poll_est_total = _poll_duration * 0.5
+            _poll_est_total = math.ceil(_poll_duration * 0.5)
         end
     else
         _poll_est_total = 30  -- unknown, guess 30s

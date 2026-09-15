@@ -285,6 +285,22 @@ the Lua runtime are all verified present and working; this plugin's own
 registration in 4.0 is *inferred* from that (plus its registration in 3.0.23),
 not observed.
 
+**The check that paid off: 4.0 embeds a different Lua.** 3.0.23 links
+`liblua5.1`; 4.0 bundles **Lua 5.4.4** (read from the plugin's `$LuaVersion`
+string). Running the UI harness under `lua5.4` — the first time any test here
+did — found three real 4.0-only breakages, all now fixed:
+
+| symptom on 4.0 | why Lua 5.1 hid it |
+|---|---|
+| `math.randomseed` aborted the whole file at runtime | 5.4 rejects a float seed with no exact integer representation; 5.1 has only floats and accepts it |
+| `string.format("%ds", eta)` raised, killing the progress tick | same integer rule for `%d`: a fractional ETA (7 s clip × 0.5 = 3.5) is rejected by 5.4, silently truncated by 5.1 |
+| the Windows launch path reported *"failed to launch Python"* even on success | `os.execute` returns an exit code in 5.1 but `true/"exit"/code` in 5.4, so `ok ~= 0` inverted on 4.0 |
+
+Both harnesses now run under **`lua5.1` and `lua5.4`** (103 + 25 checks, 0 failed
+on each), and reverting any of the three fixes fails a check or aborts the load
+under 5.4 while still passing under 5.1 — which is exactly the asymmetry that
+had been hiding this class of bug.
+
 ## Testing
 
 ### Automated tests (dev)
