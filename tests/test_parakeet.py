@@ -177,6 +177,59 @@ def test_backend_model_label_tracks_the_runner(runner, monkeypatch, tmp_path):
         assert ParakeetBackend().model_label("large") == expected
 
 
+# ── chunking: memory-bounded size + seam handling ─────────────────────────
+
+def test_chunk_seconds_default_and_override(runner, monkeypatch):
+    """Default is the measured-safe 30 s; the env override is range-checked, so
+    a junk or dangerous value keeps the default instead of OOMing again."""
+    monkeypatch.delenv("VSCL_AISUBS_PARAKEET_CHUNK", raising=False)
+    assert runner.CHUNK_SECONDS == 30
+    assert runner.resolve_chunk_seconds() == 30
+    for raw, want in (("60", 60), ("45.5", 45), ("5", 5), ("600", 600)):
+        monkeypatch.setenv("VSCL_AISUBS_PARAKEET_CHUNK", raw)
+        assert runner.resolve_chunk_seconds() == want, raw
+    for bad in ("0", "4", "601", "-30", "hello", "", "  "):
+        monkeypatch.setenv("VSCL_AISUBS_PARAKEET_CHUNK", bad)
+        assert runner.resolve_chunk_seconds() == 30, bad
+
+
+def test_keep_nominal_window_gives_each_word_one_owner(runner):
+    """Words in the overlap belong to the chunk whose window starts them; a word
+    straddling the seam stays with the chunk that opened it instead of being
+    emitted twice (or garbled on both sides). Words are (text, start, end)."""
+    words = [
+        ("left", 9.0, 9.4), ("seam", 9.9, 10.3), ("right", 10.0, 10.4),
+        ("tail", 29.9, 30.2), ("next", 30.1, 30.5),
+    ]
+    assert [w[0] for w in runner.keep_nominal_window(words, 10.0, 30.0)] == ["right", "tail"]
+    assert [w[0] for w in runner.keep_nominal_window(words, 30.0, 60.0)] == ["next"]
+
+
+def test_multi_chunk_run_keeps_every_chunk(runner, monkeypatch, tmp_path, capsys):
+    """A 65 s clip at 30 s chunks = 3 chunks, and the words from each one must
+    survive the seam filter (the fake model returns 3 words per chunk)."""
+    media = tmp_path / "clip.wav"
+    media.write_bytes(b"x")
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v2")
+    monkeypatch.setattr(runner, "load_float32_16k", lambda _p: [0.0] * (65 * 16000))
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "ignored", "en", "transcribe"])
+    runner.main()
+    out = capsys.readouterr().out
+    assert "chunk 1/3" in out and "chunk 2/3" in out and "chunk 3/3" in out
+    assert out.count('"type": "sub"') == 3        # one cue per chunk, none lost
+    assert '"type": "done"' in out
+
+
+def test_short_media_stays_single_chunk(runner, monkeypatch, tmp_path, capsys):
+    """No chunk-per-chunk status noise for ordinary clips."""
+    media = tmp_path / "clip.wav"
+    media.write_bytes(b"x")
+    _arm_runner(runner, monkeypatch, tmp_path, variant="v2")
+    monkeypatch.setattr(sys, "argv", ["runner", str(media), "ignored", "en", "transcribe"])
+    runner.main()
+    assert "decoding chunk" not in capsys.readouterr().out
+
+
 # ── SRT side effects: write only when the caller asked for a path ──────────
 # Same regression as the WhisperX runner: the backend never forwards
 # argv[5]/argv[6], so a runner deriving <media>.srt would leave a file next to

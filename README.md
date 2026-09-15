@@ -155,9 +155,16 @@ back to CPU when no device is present.
 - Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
   checks for it up front and aborts with a clear message otherwise (the
   runner also errors cleanly if ffmpeg is missing at runtime).
-- Long media is decoded in ≤20-min chunks (`CHUNK_SECONDS` in
-  `parakeet_runner.py`) — the 0.6B TDT model ingests at most ~24 min in a
-  single forward pass (`.research/asr_report.json`).
+- Long media is decoded in 30 s chunks (`CHUNK_SECONDS` in
+  `parakeet_runner.py`; override with `VSCL_AISUBS_PARAKEET_CHUNK`). Chunk
+  length is bounded by two *measured* limits of the int8 ONNX conversion, not by
+  the model's design: peak memory grows ~1.17 GB fixed (model + onnxruntime)
+  plus ~393 MB per minute of chunk audio, and length itself becomes fatal
+  somewhere between 5 and 10 min (`onnxruntime` fails the encoder with
+  `/layers.0/self_attn/Add_2 … broadcast an axis by a dimension other than 1.
+  2500 by 7500`). The previous 20-min cap OOM-killed a 47.5-min episode at
+  9.3 GB; at 30 s that same episode finishes in 4m51s at a 2.0 GB peak —
+  ~9.8× realtime, with the model staying loaded across chunks.
 
 ## Models
 
@@ -178,6 +185,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 |----------|--------|---------|------------|
 | `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `auto` | `auto` | backend selection |
 | `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` | auto | WhisperX (runner); `cpu` = `-ng` for whisper.cpp |
+| `VSCL_AISUBS_PARAKEET_CHUNK` | seconds (5–600) | 30 | Parakeet chunk length — smaller = less RAM, larger = fewer seams |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |

@@ -112,9 +112,58 @@ def words_to_segments(words) -> list:
     return segments
 
 
-# 20 min — the 0.6B TDT model is designed for up to 24-min single-pass
-# segments; long media is decoded in chunks instead of one giant stream.
-CHUNK_SECONDS = 20 * 60
+# Chunk length for long media. This is NOT a model semantic limit — measured
+# here (2026-09-15, 15 GiB box), the int8 ONNX conversion has TWO hard limits:
+#
+#   audio    peak RSS   result
+#   2 min    1961 MB    ok (17 segments)
+#   5 min    3140 MB    ok (49 segments)
+#   10 min   5070 MB    CRASH — onnxruntime: "Add node '/layers.0/self_attn/
+#                       Add_2' … broadcast an axis by a dimension other than 1.
+#                       2500 by 7500" (the encoder refuses this length)
+#   20 min   ≈9 GB      → what OOM-killed the first chunk of a 47.5-min episode
+#                       under the old cap (7.2 GB RSS + 5.1 GB swap)
+#
+# So memory grows ~1.17 GB fixed (model + onnxruntime) plus ~393 MB per minute of
+# chunk audio, and length itself becomes fatal somewhere between 5 and 10 min.
+# 30 s sits far inside both limits (≈1.4-1.5 GB peak — fine on a 4 GB laptop) and
+# costs nothing in speed: the model stays loaded across chunks.
+# Override with VSCL_AISUBS_PARAKEET_CHUNK (seconds).
+CHUNK_SECONDS = 30
+
+# Read each chunk with a little audio past its end so a word sitting on a seam
+# is decoded with context on both sides; keep_nominal_window() then drops the
+# duplicate from the following chunk.
+CHUNK_OVERLAP_SECONDS = 2.0
+
+
+def resolve_chunk_seconds() -> int:
+    """Chunk length from VSCL_AISUBS_PARAKEET_CHUNK (5..600 s) or the default.
+
+    Out-of-range or junk values keep the default rather than silently producing
+    a chunk size that cannot work (a 0 would be an empty range, a huge one is
+    what caused the OOM).
+    """
+    raw = os.environ.get("VSCL_AISUBS_PARAKEET_CHUNK", "").strip()
+    if not raw:
+        return CHUNK_SECONDS
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return CHUNK_SECONDS
+    return value if 5 <= value <= 600 else CHUNK_SECONDS
+
+
+def keep_nominal_window(words: list, start_s: float, stop_s: float) -> list:
+    """Words (text, start, end) whose *start* falls in this chunk's nominal window.
+
+    Chunks overlap slightly (see CHUNK_OVERLAP_SECONDS), so without this rule a
+    word in the overlap would be emitted by both neighbours, and a word split by
+    the boundary would come out garbled at the seam. Keeping only words that
+    start inside the window gives each word exactly one owner: the chunk that
+    contains its opening.
+    """
+    return [w for w in words if start_s <= w[1] < stop_s]
 
 
 def chunk_plan(n_samples: int, chunk_samples: int) -> list:
@@ -186,22 +235,28 @@ def main():
     samples = load_float32_16k(wav_path)
     os.unlink(wav_path)
 
-    # Long media: decode in ≤20-min chunks (the 0.6B TDT model is designed
-    # for up to 24-min single-pass segments) instead of one giant stream.
-    ranges = chunk_plan(len(samples), CHUNK_SECONDS * SAMPLE_RATE)
+    # Long media: decode in memory-bounded chunks (see CHUNK_SECONDS) instead of
+    # one giant stream — a full film used to take the machine down.
+    ranges = chunk_plan(len(samples), resolve_chunk_seconds() * SAMPLE_RATE)
+    overlap = int(CHUNK_OVERLAP_SECONDS * SAMPLE_RATE)
     words = []
     n_chunks = len(ranges)
     for ci, (start, stop) in enumerate(ranges, 1):
         if n_chunks > 1:
             emit({"type": "status", "msg": f"Parakeet: decoding chunk {ci}/{n_chunks} (+{time.time()-t0:.0f}s)"})
         stream = rec.create_stream()
-        stream.accept_waveform(SAMPLE_RATE, samples[start:stop])
+        stream.accept_waveform(SAMPLE_RATE, samples[start:min(stop + overlap, len(samples))])
         rec.decode_stream(stream)
         result = stream.result
         tokens = result.tokens or []
         times = result.timestamps or []
         if tokens:
-            words.extend(shift_words(tokens_to_words(tokens, times), start / SAMPLE_RATE))
+            chunk_words = shift_words(tokens_to_words(tokens, times), start / SAMPLE_RATE)
+            # The last chunk owns everything from its start onwards: the model's
+            # final timestamps can sit a hair past the audio length (padding),
+            # and there is no following chunk to hand those words to.
+            stop_s = stop / SAMPLE_RATE if ci < n_chunks else float("inf")
+            words.extend(keep_nominal_window(chunk_words, start / SAMPLE_RATE, stop_s))
 
     if not words:
         emit({"type": "status", "msg": "No speech detected."})
