@@ -249,6 +249,24 @@ depends on anything else.)
 So: 3.x works today, and 4.0 should load unchanged — but that is a source-level
 claim, not a run against a 4.0 build, and it is described as such here.
 
+Two details matter for *loading*, and both check out the same way:
+
+- **The scan-time environment is still bare.** `ScanLuaCallback()` in 4.0
+  creates a fresh `luaL_newstate()` with only a dummy `require` before running
+  the file — no `io`, `os` or `math` — identical to 3.0's batch scan. This
+  plugin's top level is deliberately conservative for that reason (all dialog
+  work happens inside functions, `math.randomseed` is guarded); that is exactly
+  what registering in VLC 3.0.23 exercises.
+- **The user directory is unchanged.** 4.0 still resolves the user script dir
+  through `config_GetUserDir(VLC_USERDATA_DIR)`, so
+  `~/.local/share/vlc/lua/extensions/` remains correct. (4.0 adds zip-packaged
+  `.vle` extensions as an extra format; the plain `.lua` file still works.)
+
+**Why no 4.0 run in this repo's verification:** VideoLAN's `master-daily` PPA
+(their only 4.0 channel that isn't a snap) currently reports *Failed to build*
+for `vlc` on amd64, and the Linux nightlies are snap-only. A container with the
+distribution package installs 3.0.x instead, so it would prove nothing about 4.0.
+
 ## Testing
 
 ### Automated tests (dev)

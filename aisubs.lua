@@ -324,7 +324,12 @@ end
 --     ones that run. (The test harness once stubbed vlc.player.*, which is how the
 --     fiction survived: it exercised a path no real VLC has.)
 -- Not yet executed against a real 4.0 build (4.0 is unreleased; Linux nightlies
--- are snap-only).
+-- are snap-only, and VideoLAN's master-daily PPA currently fails to build vlc).
+-- Scan-time behaviour checked too: 4.0's ScanLuaCallback still evaluates the file
+-- in a bare luaL_newstate() (only a dummy `require`, no io/os/math), i.e. the
+-- same restriction as 3.0 — which the top level of this file is written for.
+-- VLC 4.0 also resolves the user script dir via VLC_USERDATA_DIR (unchanged) and
+-- additionally accepts zip-packaged ".vle" extensions.
 ----------------------------------------------------------------
 
 function get_input_item()
