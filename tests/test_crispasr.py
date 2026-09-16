@@ -1,0 +1,132 @@
+"""CrispASR engine: model tiering, command building, SRT parsing.
+
+No binary and no model download here — the *decisions* are what can be silently
+wrong, and they are what decides which model a given machine runs. The measured
+facts behind them are in `.research/2026-09-16-asr-landscape-and-crispasr.md`.
+"""
+
+import pytest
+
+from core.crispasr_models import (MODELS, align_enabled, binary, model_argument,
+                                  model_label, model_tag, pick)
+from crispasr_runner import build_command, parse_srt
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    for var in ("VSCL_AISUBS_CRISPASR_MODEL", "VSCL_AISUBS_CRISPASR_ALIGN",
+                "VSCL_AISUBS_CRISPASR_BIN"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_the_default_model_is_the_cpu_safe_one():
+    """A VRAM-only rule would hand this laptop a 2B model: its GTX 1650 has 4 GB
+    but is throttled to 300 MHz (measured, nvidia-smi throttle reason 0x4)."""
+    assert model_tag("en") == "parakeet-0.6b"
+    assert model_tag("de") == "parakeet-0.6b"
+    assert model_tag(None) == "parakeet-0.6b"
+
+
+def test_auto_tiers_by_vram(monkeypatch):
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_MODEL", "auto")
+    assert model_tag("en", vram_mb=0) == "parakeet-0.6b"
+    assert model_tag("en", vram_mb=4096) == "parakeet-1.1b"
+    assert model_tag("en", vram_mb=6144) == "cohere"
+    assert model_tag("en", vram_mb=8192) == "canary-qwen"
+
+
+def test_a_tier_that_cannot_handle_the_language_is_not_chosen():
+    """canary-qwen and voxtral do not cover Japanese; the pick must still be usable."""
+    model = pick(8192, "ja")
+    assert model.handles("ja")
+    assert model.tag in ("cohere", "qwen3-1.7b")
+
+
+def test_an_empty_language_set_means_wide_coverage():
+    """Qwen3-ASR lists 30 languages + 22 dialects; enumerating it is pointless,
+    and treating "not enumerated" as "handles nothing" made it unreachable."""
+    qwen = next(m for m in MODELS if m.tag == "qwen3-1.7b")
+    assert qwen.handles("ja") and qwen.handles("sw") and qwen.handles(None)
+
+
+def test_a_named_model_wins(monkeypatch):
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_MODEL", "cohere")
+    assert model_tag("en") == "cohere"
+    assert model_label("en") == "cohere-transcribe-03-2026"
+
+
+def test_a_gguf_path_is_passed_through(monkeypatch, tmp_path):
+    gguf = tmp_path / "my-quant.gguf"
+    gguf.write_bytes(b"x")
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_MODEL", str(gguf))
+    assert model_tag("en") == str(gguf)
+
+
+def test_the_model_argument_is_auto_only_for_backend_defaults():
+    """`auto` for a non-default variant would run a different model than the
+    status line names — the class of lie this project has been bitten by before."""
+    assert model_argument("parakeet-0.6b") == "auto"
+    assert model_argument("cohere") == "auto"
+    assert model_argument("parakeet-1.1b") == "parakeet-1.1b"
+    assert model_argument("qwen3-1.7b") == "qwen3-1.7b"
+    assert model_argument("/tmp/x.gguf") == "/tmp/x.gguf"
+
+
+def test_the_aligner_is_off_on_cpu_and_on_with_a_gpu():
+    """Measured on 90 s of the test film: 21.1 s without the aligner, 88.8 s with it."""
+    assert align_enabled(gpu=False) is False
+    assert align_enabled(gpu=True) is True
+
+
+def test_the_aligner_can_be_forced_either_way(monkeypatch):
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_ALIGN", "1")
+    assert align_enabled(gpu=False) is True
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_ALIGN", "0")
+    assert align_enabled(gpu=True) is False
+
+
+def test_the_command_always_splits_on_punctuation():
+    """Without -sp the binary emits ONE cue for the whole file (86 s measured)."""
+    cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o", False, None)
+    assert "-sp" in cmd and "-osrt" in cmd
+
+
+def test_the_command_never_forces_a_gpu_backend():
+    """The CUDA build selects its backend at runtime; forcing one would defeat the
+    CPU fallback that lets a single install work on both machines."""
+    cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o", False, None)
+    assert "--gpu-backend" not in cmd
+
+
+def test_cpu_device_adds_the_no_gpu_flag():
+    cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o", False, "cpu")
+    assert "-ng" in cmd
+
+
+def test_the_aligner_flags_are_added_together():
+    cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o", True, None)
+    assert cmd[cmd.index("-am") + 1] == "auto"
+    assert "-falign" in cmd
+
+
+def test_parse_srt_reads_cues(tmp_path):
+    path = tmp_path / "x.srt"
+    path.write_text("1\n00:00:01,500 --> 00:00:03,250\nHello there.\n\n"
+                    "2\n00:01:00,000 --> 00:01:02,000\nSecond\nline.\n", encoding="utf-8")
+    cues = parse_srt(str(path))
+    assert cues[0] == {"start": 1.5, "end": 3.25, "text": "Hello there."}
+    assert cues[1]["text"] == "Second line."
+
+
+def test_the_binary_honours_the_env_override(tmp_path, monkeypatch):
+    fake = tmp_path / "crispasr"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_BIN", str(fake))
+    assert binary() == str(fake)
+
+
+def test_a_broken_env_path_reports_absent_rather_than_guessing(monkeypatch):
+    """Pointing at a path that does not exist must not silently fall back to a
+    different binary — the engine would then report a model it is not running."""
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_BIN", "/nonexistent/crispasr")
+    assert binary() is None

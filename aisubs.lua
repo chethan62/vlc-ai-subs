@@ -69,6 +69,7 @@ local ENGINES = {
     { "whisperx",   "WhisperX (multilingual, aligned)" },
     { "parakeet",   "Parakeet (fastest; v2 English / v3 25 languages)" },
     { "whispercpp", "whisper.cpp (Vulkan - AMD/Intel GPUs)" },
+    { "crispasr",   "CrispASR (ggml: Parakeet/Cohere/Canary by VRAM)" },
 }
 local MODELS = {
     { "recommended",    "Recommended (auto)" },
@@ -333,6 +334,10 @@ function engine_for(engine, language, task)
         return "whispercpp",
             "whisper.cpp translates with Whisper itself (NLLB cascade needs WhisperX)"
     end
+    if engine == "crispasr" and task == "translate" then
+        -- CrispASR's --translate is whisper-only; every other backend transcribes.
+        return "whisperx", "CrispASR cannot translate - using WhisperX"
+    end
     return engine, nil
 end
 
@@ -340,6 +345,7 @@ end
 function engine_label(engine)
     if engine == "parakeet" then return "Parakeet" end
     if engine == "whispercpp" then return "whisper.cpp" end
+    if engine == "crispasr" then return "CrispASR" end
     if engine == "auto" then return "Auto" end
     return "WhisperX"
 end

@@ -149,8 +149,10 @@ cp "$SCRIPT_DIR/whisperx_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/nllb_translate.py" "$INSTALL_DIR/"   2>/dev/null || true
 cp "$SCRIPT_DIR/parakeet_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/whispercpp_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/crispasr_runner.py" "$INSTALL_DIR/"  2>/dev/null || true
 cp "$SCRIPT_DIR/install-parakeet-model.sh" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-whisper-cpp.sh" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/install-crispasr.sh"     "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-nllb-model.sh"      "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-m2m-model.sh"       "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/aisubs.lua" "$EXT_DIR/"             2>/dev/null || true

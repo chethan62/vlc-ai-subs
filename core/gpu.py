@@ -31,6 +31,54 @@ def nvidia_gpu() -> str | None:
     return names[0] if names else None
 
 
+def vram_mb() -> int:
+    """Total VRAM of the first NVIDIA GPU in MiB, or 0 (no tool / no device).
+
+    Total, not free: free memory on a desktop with a browser open says nothing
+    about what the card is for. Absence of nvidia-smi is not an error — the
+    callers all treat 0 as "assume CPU".
+    """
+    if not shutil.which("nvidia-smi"):
+        return 0
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 0
+    for line in out.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            return int(line)
+    return 0
+
+
+def gpu_clock_mhz() -> tuple[int, int]:
+    """(current, max) graphics clock of the first NVIDIA GPU, or (0, 0).
+
+    Used only for reporting: this project's own laptop has a dGPU capped at
+    ~300 MHz (throttle reason 0x4, SW Power Cap) while still advertising a
+    1785 MHz maximum, which is why a memory-size probe alone cannot tell you
+    whether a GPU is worth using. `nvidia-smi` is the honest source for both.
+    """
+    if not shutil.which("nvidia-smi"):
+        return (0, 0)
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=clocks.gr,clocks.max.graphics",
+             "--format=csv,noheader,nounits"],
+            text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return (0, 0)
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            return (int(parts[0]), int(parts[1]))
+    return (0, 0)
+
+
 def vulkan_icds() -> list[str]:
     """Installed Vulkan driver manifests (ICDs) — one per GPU driver found.
 

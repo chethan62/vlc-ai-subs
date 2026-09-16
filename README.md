@@ -12,7 +12,7 @@ or real-time on-screen captions.
 |---|---|
 | **Zero-config** | "Recommended (auto)" model + Auto engine + Translate to English by default — open a video, click Generate, done |
 | **Word-level timing** | WhisperX wav2vec2 alignment on CUDA, or Parakeet's native TDT word timestamps (CPU too) |
-| **Three engines** | WhisperX (multilingual, word-aligned), Parakeet (English + 25 European languages, ~10× faster) or whisper.cpp (Vulkan) |
+| **Four engines** | WhisperX (multilingual, word-aligned), Parakeet (English + 25 European languages, ~10× faster), whisper.cpp (Vulkan) or CrispASR (one ggml binary: Parakeet/Cohere/Canary/Granite/Qwen3/Voxtral, picked by VRAM, with a CTC aligner) |
 | **Auto engine** | Auto (default) picks the fastest engine that covers the language (Parakeet v2/v3), else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) / CPU |
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
 | **Two modes** | Generate & Load SRT (default), or Real-time OSD — cues appear on the OSD when playback reaches them |
@@ -421,6 +421,41 @@ back to CPU when no device is present.
   9.3 GB; at 30 s that same episode finishes in 4m51s at a 2.0 GB peak —
   ~9.8× realtime, with the model staying loaded across chunks.
 
+### CrispASR — one binary, many models, optional CTC alignment
+
+[CrispASR](https://github.com/CrispStrobe/CrispASR) (MIT, a whisper.cpp fork) runs several ASR
+architectures from a single C++ binary — no Python, no PyTorch: Parakeet, Cohere Transcribe,
+Canary, Granite, Qwen3-ASR, Voxtral. It is **never chosen automatically**; select it explicitly:
+
+```bash
+./install-crispasr.sh                                 # CUDA build on an NVIDIA box, CPU build otherwise
+VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine pick
+```
+
+- **The install scales with the machine.** On an NVIDIA box the script fetches the CUDA
+  tarball, whose CUDA backend is loaded *at runtime* — the same binary uses the GPU where there
+  is one and the CPU where there is not. The `-hip` (AMD) and `-vulkan` tarballs do **not** fall
+  back, so they are never auto-selected; for AMD with a fallback, build CrispASR yourself with
+  `-DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON`.
+- **Models tier by VRAM, and tiering is opt-in** (`VSCL_AISUBS_CRISPASR_MODEL=auto`): CPU →
+  Parakeet 0.6b-v3 · ~4 GB → Parakeet 1.1B or Qwen3-ASR 0.6B · ~6 GB → Cohere Transcribe (2B,
+  claimed 5.42 avg WER) / Granite Speech 4.1-2B / Qwen3-ASR 1.7B · ~8 GB → Canary-Qwen 2.5B
+  (English) or Voxtral-Mini-3B. The *default* is the smallest model deliberately: the machine
+  this is developed on has a 4 GB GTX 1650 that advertises 1785 MHz while being throttled to
+  300 MHz, so VRAM alone is not a promise that a bigger model would be usable.
+- **Throughput, measured** on 8 CPU threads with a warm cache: Parakeet **4.2× realtime**
+  (~35 min for a 145-minute film), and **2.4×** with the CTC aligner (~61 min). The aligner is
+  on by default when a GPU is doing the work and opt-in on CPU — `VSCL_AISUBS_CRISPASR_ALIGN=1`.
+- **The aligner is the reason to have this engine.** It derives word timings from speech rather
+  than from the decoder's emission frames — the one timing defect that survived VAD-onset
+  snapping (a measured no-op) and cue redistribution. On the 90 s of the test film where this
+  plugin's Parakeet path silently drops a passage, CrispASR returns it intact and
+  sentence-split, with 0 overlaps.
+- **Its output is not standards-compliant on its own** (8 lines over 42 chars and 2 cues over
+  7 s in those 90 s). The plugin's own `apply_quality` pass takes that to 0 and 0 with every
+  word kept — which is why the two layers stay separate: engine supplies text and timings, the
+  plugin enforces the published cue limits.
+
 ## Models
 
 | Model | Speed | Accuracy | RAM | Download |
@@ -438,7 +473,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 
 | Variable | Values | Default | Applies to |
 |----------|--------|---------|------------|
-| `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `auto` | `auto` | backend selection |
+| `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `crispasr` \| `auto` | `auto` | backend selection |
 | `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` | auto | WhisperX (runner); `cpu` = `-ng` for whisper.cpp |
 | `VSCL_AISUBS_PARAKEET_CHUNK` | seconds (5–600) | 30 | Parakeet chunk length — smaller = less RAM, larger = fewer seams |
 | `VSCL_AISUBS_VAD_MODEL` | path, or `none`/`off`/`0`/`no` to disable | `~/.local/share/sherpa-onnx/models/` | where the VAD model lives; absent or disabled = no VAD |
@@ -460,6 +495,9 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_PARAKEET_VERSION` | `v2` \| `v3` | auto (by language) | Parakeet: force one model |
 | `VSCL_AISUBS_PARAKEET_MODEL` | directory | auto-detected | Parakeet: use this model directory |
 | `VSCL_AISUBS_WHISPERCPP_MODEL` | path to a `ggml-*.bin` | best installed | whisper.cpp engine |
+| `VSCL_AISUBS_CRISPASR_MODEL` | tier tag (`cohere`, `parakeet-1.1b`), a `.gguf` path, or `auto` | smallest (`parakeet-0.6b`) | CrispASR engine — `auto` tiers the model by detected VRAM; the default deliberately does not |
+| `VSCL_AISUBS_CRISPASR_ALIGN` | `1` \| `0` | on with a GPU, off on CPU | CrispASR CTC aligner: real word timings, +72 % runtime on CPU (measured) |
+| `VSCL_AISUBS_CRISPASR_BIN` | path to the `crispasr` binary | `~/.local/share/crispasr/crispasr` | CrispASR engine |
 | `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
 
@@ -471,11 +509,13 @@ aisubs_whisper.py            CLI entry-point (args → backend → JSONL → SRT
 whisperx_runner.py           WhisperX inside the Python 3.12 venv (subprocess)
 parakeet_runner.py           Parakeet TDT via sherpa-onnx (same JSONL contract)
 whispercpp_runner.py         whisper.cpp via whisper-cli — Vulkan (AMD/Intel/NVIDIA)
+crispasr_runner.py           CrispASR via one ggml binary (Parakeet/Cohere/Canary/…, CTC aligner)
 nllb_translate.py            NLLB-200 / M2M-100 translate cascade (ctranslate2)
 core/
   emitter.py                 JSONL + Lua poll-mirror output
   srt.py                     SRT timestamp formatting + file writing
   cues.py                    cue line-wrapping + timing quality pass
+  crispasr_models.py         CrispASR model/VRAM tiers + aligner policy (leaf)
   blocklist.py               hallucination-phrase filter (VSCL_AISUBS_BLOCKLIST)
   audio.py                   ffmpeg decode to 16 kHz mono wav
   gpu.py                     NVIDIA/Vulkan capability probes (engine choice)
@@ -575,7 +615,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 274 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 290 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

@@ -27,6 +27,7 @@ _ENGINES = {
     "whisperx": ("backends.whisperx_backend", "WhisperXBackend", "WhisperX"),
     "parakeet": ("backends.parakeet", "ParakeetBackend", "Parakeet"),
     "whispercpp": ("backends.whispercpp", "WhisperCppBackend", "whisper.cpp"),
+    "crispasr": ("backends.crispasr", "CrispAsrBackend", "CrispASR"),
 }
 
 _INSTALL_HINT = {
@@ -39,6 +40,7 @@ _INSTALL_HINT = {
         "~/.local/share/vlc-ai-subs/venv-whisperx/bin/python sherpa-onnx"
     ),
     "whispercpp": "./install-whisper-cpp.sh",
+    "crispasr": "./install-crispasr.sh",
 }
 
 # Pre-fork engine names still found in the wild / in old docs.
