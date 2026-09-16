@@ -19,7 +19,7 @@ or real-time on-screen captions.
 | **Right audio track** | Multi-audio releases (DUAL/MULTi) are common and ffmpeg's default is the *first* track — the dub. The plugin picks the one matching your language, skips audio-description/commentary tracks, and says which it used |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
 | **Readable cues** | Text wrapped to the *language's* line width from the Netflix timed-text guides (42 chars Latin, 16 Chinese/Korean, 13 Japanese, ≤2 lines); cues over 7 s split at sentence boundaries (cut into equal runs for unpunctuated CJK); a cue whose text needs longer than 20 CPS *(9 Chinese, 4 Japanese, 12 Korean, 17 most other languages)* is given more time up to the next cue — never fewer words; min-duration and gap cleanup |
-| **Cancel + memory** | Cancel a running transcription; the dialog remembers engine/model/language/task/mode |
+| **Cancel + memory** | Cancel a running transcription — it stops the backend child and its ffmpeg decode, and removes the partial decoded audio (an 87 MB file, measured); a run killed outright leaves it for the next run's sweep; the dialog remembers engine/model/language/task/mode |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
 | **VLC 3.x now, 4.x-ready** | Every Lua API it uses is present in VLC 4.0's source (checked); no 4.0 build has been run yet |
@@ -86,6 +86,18 @@ language). The same file now yields actual dialogue:
 Did you know that?
 I did not.
 ```
+
+## Cancelling a run
+
+Cancel signals the CLI (the extension has no process API), which stops the backend
+runner; the runner stops its own ffmpeg decode and deletes the half-written temp
+wav. Measured before that existed: cancelling mid-decode stopped the processes but
+left an **87 MB partial wav** in `/tmp` — a 145-minute film would leave ~280 MB, and
+every cancelled run added another.
+
+A run killed outright (SIGKILL, or VLC crashing) gets no chance to clean up, so each
+new run sweeps `/tmp/aisubs_*.wav` older than two hours — age-gated, so a second VLC
+window's fresh decode is never touched.
 
 ## Quick Start
 
@@ -422,7 +434,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 222 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 226 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

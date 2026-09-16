@@ -35,8 +35,9 @@ import time
 import wave
 from typing import TYPE_CHECKING
 
-from core.audio import SAMPLE_RATE, choose_audio_stream, decode_to_wav16k, list_audio_streams
+from core.audio import SAMPLE_RATE, choose_audio_stream, cleanup_temp, decode_to_wav16k, list_audio_streams
 from core.cues import apply_quality
+from core.procs import install_termination_handler
 from core.srt import write_srt
 
 if TYPE_CHECKING:
@@ -180,6 +181,11 @@ def shift_words(words: list, dt: float) -> list:
 
 
 def main():
+    # A cancelled run must stop this process's own children and remove the temp wav:
+    # the CLI signals us (its registry cannot see our ffmpeg) and a SIGTERM leaves
+    # no chance to clean up otherwise.
+    install_termination_handler(cleanup_temp)
+
     if len(sys.argv) < 5:
         emit({"type": "error", "msg": "Usage: runner <media> <model> <lang> <task> [mirror] [srt]"})
         sys.exit(1)

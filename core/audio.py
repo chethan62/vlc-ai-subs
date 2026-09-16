@@ -10,7 +10,8 @@ the dialogue: measured here, a "MULTi VFF" file's first track is French and a
 model French audio — which produced plausible-looking nonsense rather than an
 error. Stream selection lives here for that reason.
 
-Leaf module: stdlib only, no imports from core/, backends/ or the runners.
+Leaf-ish module: stdlib only, and its single internal import (core.procs) is itself
+stdlib-only, so the dependency graph stays acyclic.
 """
 
 import json
@@ -19,9 +20,19 @@ import shutil
 import subprocess
 import tempfile
 
+from core.procs import run_captured
+
 SAMPLE_RATE = 16000
 DECODE_TIMEOUT = 600
 PROBE_TIMEOUT = 30
+# Temp wavs are named with this prefix so a stale sweep can recognise them.
+TEMP_PREFIX = "aisubs_"
+
+# Decoded wavs still on disk, so a cancelled run can clean up after itself. A
+# cancelled or killed run leaves the half-written file otherwise: measured, one
+# SIGTERM left an 87 MB partial wav (a 145-minute film would leave ~280 MB), and
+# every cancelled run added another.
+_LIVE_TEMP: set[str] = set()
 
 # Container language tags are ISO 639-2 ("fre", "eng", "por") while the plugin's
 # UI and engines speak 639-1 ("fr", "en", "pt"), so a straight string compare
@@ -164,20 +175,73 @@ def decode_to_wav16k(media_path: str, timeout: float = DECODE_TIMEOUT,
     ffmpeg = ffmpeg_path()
     if not ffmpeg:
         raise RuntimeError("ffmpeg not found — required by this backend")
-    fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="aisubs_")
+    fd, tmp = tempfile.mkstemp(suffix=".wav", prefix=TEMP_PREFIX)
     os.close(fd)
     cmd = [ffmpeg, "-y", "-v", "error", "-i", media_path]
     if stream_index is not None:
         cmd += ["-map", f"0:{int(stream_index)}"]
     cmd += ["-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "wav", tmp]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    # run_captured registers the child in core.procs, so a cancelled run stops
+    # ffmpeg instead of orphaning it mid-write.
+    _LIVE_TEMP.add(tmp)
+    try:
+        proc = run_captured(cmd, timeout=timeout)
+    finally:
+        _LIVE_TEMP.discard(tmp)
     if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) == 0:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        discard_temp(tmp)
         raise RuntimeError(f"ffmpeg decode failed: {(proc.stderr or '').strip()[:300]}")
     return tmp
+
+
+def discard_temp(path: str | None) -> None:
+    """Remove one of our temp wavs (missing/already-gone is fine)."""
+    if not path:
+        return
+    _LIVE_TEMP.discard(path)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def cleanup_temp() -> int:
+    """Remove every temp wav this process still has on disk. Returns the count.
+
+    Called from the runners' cancellation handler, so stopping a run does not leave
+    a partial decode behind.
+    """
+    paths = list(_LIVE_TEMP)
+    for path in paths:
+        discard_temp(path)
+    return len(paths)
+
+
+def sweep_stale_temp(max_age: float = 7200.0) -> int:
+    """Delete abandoned temp wavs older than *max_age* seconds. Returns the count.
+
+    A SIGKILL (or VLC crashing) leaves no chance to clean up, so the next run
+    sweeps what is left. Age-gated: another VLC window's decode is minutes old at
+    most, never hours.
+    """
+    import time
+
+    removed, now = 0, time.time()
+    try:
+        names = os.listdir(tempfile.gettempdir())
+    except OSError:
+        return 0
+    for name in names:
+        if not (name.startswith(TEMP_PREFIX) and name.endswith(".wav")):
+            continue
+        path = os.path.join(tempfile.gettempdir(), name)
+        try:
+            if now - os.path.getmtime(path) > max_age:
+                os.unlink(path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def read_wav_pcm16(path: str) -> bytes:

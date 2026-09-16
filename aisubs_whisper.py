@@ -41,7 +41,7 @@ import sys
 import time
 import traceback
 
-from core.audio import choose_audio_stream, list_audio_streams
+from core.audio import choose_audio_stream, list_audio_streams, sweep_stale_temp
 from core.emitter import Emitter
 from core.procs import terminate_all
 from core.srt import write_srt
@@ -325,6 +325,17 @@ def main():
         "type": "status",
         "msg": f"Backend: {backend.name()} — {model_name} ({language or 'auto'}, {task})",
     })
+
+    # A SIGKILLed run — or VLC crashing — gets no chance to clean up, so sweep what
+    # is left before starting. Age-gated: another VLC window's decode is minutes old
+    # at most, never hours.
+    try:
+        swept = sweep_stale_temp()
+        if debug and swept:
+            _log_debug(f"swept {swept} stale temp wav(s)")
+    except Exception as exc:
+        if debug:
+            _log_debug(f"stale-temp sweep failed: {exc}")
 
     # Which audio track will be transcribed. Worth saying out loud on multi-track
     # releases: ffmpeg's own default is the first stream, and on a real DUAL/VFF

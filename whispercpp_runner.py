@@ -38,9 +38,9 @@ import sys
 import tempfile
 import time
 
-from core.audio import choose_audio_stream, decode_to_wav16k, list_audio_streams
+from core.audio import choose_audio_stream, cleanup_temp, decode_to_wav16k, list_audio_streams
 from core.cues import apply_quality
-from core.procs import run_captured
+from core.procs import install_termination_handler, run_captured
 from core.srt import write_srt
 
 # Dialog model choice → ggml file (matches install-whisper-cpp.sh).
@@ -293,6 +293,10 @@ def transcribe(
 
 
 def main():
+    # A cancelled run must stop this process's own children (the ffmpeg decode) and
+    # remove the temp wav: the CLI signals us, and its registry cannot see them.
+    install_termination_handler(cleanup_temp)
+
     if len(sys.argv) < 5:
         emit({"type": "error", "msg": "Usage: runner <media> <model> <lang> <task> [mirror] [srt]"})
         sys.exit(1)
