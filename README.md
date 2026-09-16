@@ -49,6 +49,38 @@ guidance is explicit that adding time is preferred to cutting words, and this
 plugin never rewrites what was said. Where the speech is continuous and there is
 no slack to take, the cue stays dense; the alternative would be dropping words.
 
+Three rules keep those limits true in the output, and all three came from testing a
+feature-length film after episode-length media had passed:
+
+- **A cue whose text needs a third line is split**, whatever the script. The
+  splitter only looked at cues that were too long in *time*, or CJK text too wide
+  for its line cap, so a long comma-separated English sentence survived intact and
+  was written as one line.
+- **Nothing is displayed longer than the maximum.** A cue the splitter cannot break
+  (two words over a 54 s silence) used to be left exactly as it was.
+- **Line breaks survive the whole pipeline.** The engines wrap the text, and the
+  CLI's hallucination filter then normalised the whitespace, flattening every
+  wrapped cue back into a single line.
+
+Measured on a 145-minute feature (2 h 18 m, one English track, 1841 cues, 20 m 24 s
+of Parakeet on CPU, 2.7 GB peak):
+
+| | as produced | after |
+| --- | --- | --- |
+| cues with a line over 42 chars | 397 (worst 100) | **0** (worst 42) |
+| cues longer than 7 s | 43 (worst 51.6 s) | **0** (worst 7.0 s) |
+| overlapping cues | 1 | **0** |
+| cues | 1841 | 1853 (the necessary splits) |
+| words | 10143 | **10143, same order** |
+
+The one standard the plugin cannot yet meet is reading speed: 505 cues (27.3 %) of
+that film carry more text than 20 CPS allows in the span the engine gave them, the
+worst needing 62 CPS. That is a timestamp problem, not a text problem — the film's
+average density is about 6 CPS, so the time exists; the engine's segments simply
+place the words in the wrong spans. Fixing it properly needs word-level alignment,
+which the **WhisperX engine has** (see *Engines*); the Parakeet route trades that
+timing accuracy for CPU speed. The plugin never shortens the text to hide it.
+
 Measured on real files (see `tests/` for the fixtures):
 
 - a 5-minute English episode — 8 of 49 cues were given a little more time, 1.5 s
@@ -482,7 +514,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 226 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 242 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

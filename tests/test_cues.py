@@ -25,7 +25,10 @@ def _widths(wrapped: str) -> list[int]:
 
 
 def test_normalize_collapses_whitespace():
-    assert normalize("  a \n b\t\tc ") == "a b c"
+    # Horizontal runs collapse; a deliberate line break survives. Newlines used to
+    # be flattened here, which destroyed the engine's wrapping downstream.
+    assert normalize("  a \n b\t\tc ") == "a\nb c"
+    assert normalize("a   b   c") == "a b c"
     assert normalize(None) == ""
 
 
@@ -119,10 +122,15 @@ def test_back_to_back_cues_get_a_gap():
     assert out[0]["end"] < out[1]["start"]
 
 
-def test_long_cue_is_left_long():
-    """Splitting needs per-word timings; shortening display time is worse."""
+def test_a_long_cue_is_clamped_to_the_maximum():
+    """Reversed, on the film's evidence. This used to read "Splitting needs per-word
+    timings; shortening display time is worse" and left the cue showing for 12 s.
+    Seven seconds is the published maximum (Netflix timed-text guides), and the film
+    showed the cost of ignoring it: a two-word cue displayed for 51.6 s. Clamping
+    drops nothing — the text is short enough to read in a fraction of the span, and
+    the missing time is silence, not speech."""
     out = apply_quality([{"start": 0.0, "end": 12.0, "text": "a very long cue"}])
-    assert out[0]["end"] == pytest.approx(12.0)
+    assert out[0]["end"] == pytest.approx(7.0)
 
 
 def test_empty_cues_are_dropped_and_starts_clamped():
@@ -313,11 +321,15 @@ def test_an_unpunctuated_cjk_cue_is_cut_into_readable_runs():
     assert out[0]["start"] == 0.0 and out[-1]["end"] == 25.0   # span preserved
 
 
-def test_an_unpunctuated_latin_cue_is_left_alone():
-    # "Lucky You" over a 44 s title card: chopping it up would be pointless, and
-    # padding it with invented text is not this program's business.
-    cue = {"start": 0.0, "end": 44.0, "text": "Lucky You"}
-    assert apply_quality([dict(cue)], language="en") == [cue]
+def test_an_unpunctuated_latin_cue_is_not_chopped_but_is_clamped():
+    # "Lucky You" over a 44 s title card: chopping it up would be pointless and
+    # padding it with invented text is not this program's business — still true.
+    # Clamping the display to the 7 s maximum does neither: one cue, same text,
+    # and the screen goes quiet for the silence that follows.
+    out = apply_quality([{"start": 0.0, "end": 44.0, "text": "Lucky You"}], language="en")
+    assert len(out) == 1, "nothing to split on, so it stays one cue"
+    assert out[0]["text"] == "Lucky You", "no invented padding"
+    assert out[0]["end"] == pytest.approx(7.0)
 
 
 def test_a_brief_but_dense_cjk_cue_is_split_for_its_lines():

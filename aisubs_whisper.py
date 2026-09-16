@@ -42,6 +42,7 @@ import time
 import traceback
 
 from core.audio import choose_audio_stream, list_audio_streams, sweep_stale_temp
+from core.cues import apply_quality
 from core.emitter import Emitter
 from core.procs import terminate_all
 from core.srt import write_srt
@@ -387,6 +388,13 @@ def main():
     # Drop known hallucination segments (research §2.2) before writing.
     raw_empty = not segments
     segments = filter_segments(segments)
+    # filter_segments normalises the text, which flattens the line breaks the
+    # engine already wrapped: measured on a 145-minute film, 397 cues (21.6%)
+    # arrived as single lines of up to 100 characters against a 42-character cap.
+    # Re-applying the quality pass restores the wrapping and re-checks the
+    # standards; it is idempotent for text that already satisfies them.
+    if segments:
+        segments = apply_quality(segments, language=language)
     if not segments:
         msg = ("No speech detected — skipping SRT." if raw_empty
                else "All segments filtered by the hallucination blocklist — skipping SRT.")

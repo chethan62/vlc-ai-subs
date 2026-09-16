@@ -73,9 +73,17 @@ def is_cjk(text: str) -> bool:
     return bool(_CJK.search(text or ""))
 
 
+_WS = re.compile(r"[^\S\n]+")   # horizontal whitespace runs — newlines are kept
+
+
 def normalize(text: str | None) -> str:
-    """Collapse whitespace runs and strip — keeps lyrics/spacing sane."""
-    return _WS.sub(" ", text or "").strip()
+    """Collapse horizontal whitespace runs and strip; keep deliberate line breaks.
+
+    Newlines must survive: the engines wrap their cues before this runs, and
+    flattening the breaks pushed lines far past the reader's limit (measured on a
+    145-minute film: 397 cues with lines up to 100 characters).
+    """
+    return re.sub(r" *\n *", "\n", _WS.sub(" ", text or "")).strip()
 
 
 def line_limit(max_chars: int | None = None) -> int:
@@ -156,6 +164,44 @@ def _greedy_lines(units: list[str], cjk: bool, width: int, max_lines: int) -> li
     return None if len(lines) > max_lines else lines
 
 
+def _cannot_fit(text: str, line_chars: int) -> bool:
+    """True when *text* needs more than MAX_LINES lines at *line_chars*.
+
+    The trigger for splitting a cue. Every script is subject to it (it used to be
+    CJK-only): a cue that cannot be wrapped inside the reader's limit must become
+    two cues — that is what the guides prescribe — instead of one cue whose line
+    breaks the limit. Measured on a 145-minute film: 397 cues (21.6%) were written
+    with lines up to 100 characters against a 42-character cap.
+    """
+    if not text or not line_chars:
+        return False
+    # Measure the text as it will be rendered: a line break is a space on screen,
+    # and this must give the same answer for wrapped and unwrapped text.
+    text = text.replace("\n", " ")
+    cjk = is_cjk(text)
+    return _greedy_lines(_split_units(text, cjk), cjk, int(line_chars), MAX_LINES) is None
+
+
+def _word_runs(text: str, size: int) -> list[str]:
+    """Group words into runs of about *size* characters, never splitting a word.
+
+    The Latin counterpart of the CJK equal-character-run fallback: a long
+    comma-separated sentence with no sentence terminator has no other break to
+    offer, and leaving it whole is what produced the over-cap lines above.
+    """
+    runs: list[str] = []
+    current = ""
+    for word in text.split(" "):
+        if current and len(current) + 1 + len(word) > size:
+            runs.append(current)
+            current = word
+        else:
+            current = f"{current} {word}" if current else word
+    if current:
+        runs.append(current)
+    return runs
+
+
 def _best_two_way_split(units: list[str], cjk: bool) -> int:
     """Split index that minimises the longer of the two sides (readability).
 
@@ -183,6 +229,12 @@ def wrap(text: str, max_chars: int | None = None, max_lines: int = MAX_LINES) ->
     text = normalize(text)
     if not text:
         return ""
+
+    # Already-wrapped text (the engine wrapped it, and the CLI re-runs this pass):
+    # wrap each line on its own so the pass is idempotent and never re-flows a
+    # deliberate break into a longer line.
+    if "\n" in text:
+        return "\n".join(wrap(line, max_chars, max_lines) for line in text.split("\n"))
 
     cjk = is_cjk(text)
     width = line_limit(max_chars)
@@ -220,14 +272,10 @@ def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS,
     duration = seg["end"] - seg["start"]
     text = normalize(seg.get("text", ""))
     # Over-long means "cannot be shown within the script's own limits": either too
-    # long on screen (7 s), or more text than max_lines x line_chars of full-width
-    # CJK can hold (the Netflix guides cap CJK lines at 13-16 characters, where
-    # Latin allows 42). A brief but dense CJK cue is split for that reason alone.
-    over_capacity = (
-        bool(line_chars) and bool(text)
-        and bool(_CJK.search(text))
-        and len(text) > int(line_chars) * MAX_LINES
-    )
+    # long on screen (7 s), or more text than the reader's line limit can hold —
+    # for any script. A brief but dense cue of Latin text that needs a third line
+    # is split for that reason alone, exactly as a dense CJK cue is.
+    over_capacity = _cannot_fit(text, line_chars) if line_chars else False
     if duration <= max_seconds and not over_capacity:
         return [seg]
 
@@ -240,11 +288,17 @@ def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS,
         # cut it into equal character runs instead. That is standard practice for
         # CJK subtitles, and the alternative is a cue nobody can finish reading.
         text = normalize(seg.get("text", ""))
-        if line_chars and text and _CJK.search(text):
+        if line_chars and text and (over_capacity or _CJK.search(text)):
             per_cue = max(1, int(line_chars) * MAX_LINES)
             chunks = max(2, int(-(-len(text) // per_cue)), int(-(-duration // max_seconds)))
             size = -(-len(text) // chunks)
-            pieces = [text[i:i + size] for i in range(0, len(text), size)]
+            if _CJK.search(text):
+                pieces = [text[i:i + size] for i in range(0, len(text), size)]
+            else:
+                # Latin with no terminator to split on: group whole words into
+                # runs. A comma-separated 100-character sentence is a real
+                # measured case, and leaving it whole broke the line limit.
+                pieces = _word_runs(text, size)
         if len(pieces) < 2:
             return [seg]
 
@@ -343,10 +397,21 @@ def apply_quality(
             target = seg["start"] + min_duration
             seg["end"] = target if ceiling is None else min(target, ceiling)
         if ceiling is not None and seg["end"] > ceiling:
-            seg["end"] = max(ceiling, seg["start"] + MIN_VISIBLE)
+            # Never run past the ceiling. A cue visible for less than MIN_VISIBLE
+            # is a blemish; an overlap the renderer has to resolve is a fault.
+            # Measured on the film: one pair 0.1s apart, where the MIN_VISIBLE
+            # floor pushed a cue past its neighbour.
+            seg["end"] = max(ceiling, seg["start"])
 
         if seg["end"] - seg["start"] < MIN_VISIBLE:
-            seg["end"] = seg["start"] + MIN_VISIBLE
+            target = seg["start"] + MIN_VISIBLE
+            seg["end"] = min(target, ceiling) if ceiling is not None else target
+
+        # Nothing may be shown longer than the maximum, even when the text offered
+        # no break to split on. Measured on the film: a two-word cue stretched
+        # across a 54s silence was displayed for 51.6s.
+        if seg["end"] - seg["start"] > max_cue_seconds:
+            seg["end"] = seg["start"] + max_cue_seconds
 
         seg["start"] = round(seg["start"], 3)
         seg["end"] = round(seg["end"], 3)

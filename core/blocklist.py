@@ -79,7 +79,18 @@ def deloop_text(text: str, max_repeats: int = MAX_REPEATS) -> str:
     tidier but is wrong: "I'm sorry," x14 also matches as seven repeats of the
     two-copy phrase, so a 4-word pass collapses it to two copies and the single
     copy is never reached (that bug shipped into this function's first draft).
+
+    Repeats are collapsed within a line, never across one: a decoder loop does not
+    span a deliberate line break, and flattening the breaks here destroyed the
+    engine's wrapping (measured: 397 over-long lines on a real film).
     """
+    return "\n".join(
+        _deloop_repeats(line, max_repeats) for line in (text or "").split("\n")
+    )
+
+
+def _deloop_repeats(text: str, max_repeats: int) -> str:
+    """Collapse a repeated phrase within one line — see :func:`deloop_text`."""
     tokens = text.split()
     keys = [_key(t) for t in tokens]
     for n in range(1, MAX_LOOP_PHRASE + 1):
