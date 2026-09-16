@@ -46,6 +46,13 @@ def runner():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_audio_probe(runner, monkeypatch):
+    """No ffprobe shell-out on fake media: a fixture file has no streams, and the
+    track choice itself is covered in tests/test_audio_select.py."""
+    monkeypatch.setattr(runner, "list_audio_streams", lambda *a, **k: [])
+
+
 def _fake_cli(tmp_path) -> str:
     path = tmp_path / "whisper-cli"
     path.write_text(_FAKE_CLI)
@@ -165,7 +172,10 @@ def test_no_models_is_actionable(runner, tmp_path):
 # ── whole-runner contract (fake binary) ────────────────────────────────
 
 def _run(runner, monkeypatch, tmp_path, argv):
-    monkeypatch.setattr(runner, "decode_to_wav16k", lambda _p: str(tmp_path / "dec.wav"))
+    monkeypatch.setattr(
+        runner, "decode_to_wav16k",
+        lambda _p, timeout=None, stream_index=None: str(tmp_path / "dec.wav"),
+    )
     (tmp_path / "ggml-small.bin").write_text("")
     monkeypatch.setenv("VSCL_AISUBS_WHISPERCPP_BIN", _fake_cli(tmp_path))
     monkeypatch.delenv("VSCL_AISUBS_WHISPERCPP_MODEL", raising=False)

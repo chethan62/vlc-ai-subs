@@ -25,6 +25,12 @@ import json
 import os
 import sys
 
+from core.audio import (
+    choose_audio_stream,
+    decode_to_wav16k,
+    list_audio_streams,
+    read_wav_pcm16,
+)
 from core.cues import apply_quality
 from core.srt import write_srt
 
@@ -95,6 +101,19 @@ def hardened_asr_options() -> dict:
 
 def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def _load_waveform(wav_path: str):
+    """A 16 kHz mono PCM wav as float32 in [-1, 1] — what WhisperX expects.
+
+    WhisperX's own load_audio() returns exactly this shape (and resamples the same
+    way); doing it here instead means the model receives the track we chose rather
+    than decoding the media a second time with ffmpeg's default.
+    """
+    import numpy as np
+
+    return (np.frombuffer(read_wav_pcm16(wav_path), dtype=np.int16)
+            .astype("float32") / 32768.0)
 
 
 def main():
@@ -168,9 +187,30 @@ def main():
         vad_options={"vad_onset": 0.500, "vad_offset": 0.363},
         download_root=model_cache_dir(),
     )
+    # Decode once, here, on the track we deliberately chose. Left to itself
+    # WhisperX decodes the file itself — twice, with ffmpeg's default track, which
+    # on a real dual-audio release is the dub (see core/audio.py): asking for
+    # English subtitles transcribed French audio. One decode also costs less than
+    # the two WhisperX would do.
+    streams = list_audio_streams(media_path)
+    stream_index, why = choose_audio_stream(streams, language)
+    if len(streams) > 1:
+        emit({"type": "status", "msg": f"Audio track: {why}"})
+    emit({"type": "status", "msg": "Decoding audio..."})
+    try:
+        wav_path = decode_to_wav16k(media_path, stream_index=stream_index)
+    except RuntimeError as exc:
+        emit({"type": "error", "msg": str(exc)})
+        sys.exit(1)
+    waveform = _load_waveform(wav_path)
+    try:
+        os.unlink(wav_path)
+    except OSError:
+        pass
+
     emit({"type": "status", "msg": "Transcribing..."})
     result = model.transcribe(
-        media_path,
+        waveform,
         language=language,
         task="transcribe" if translator else task,
     )
@@ -193,7 +233,7 @@ def main():
             # Unmapped language — re-transcribe with Whisper's translate so
             # output stays English (never silently source-language).
             emit({"type": "status", "msg": f"{family}: no mapping for '{src_code}' — re-running with Whisper translate"})
-            result = model.transcribe(media_path, language=language, task="translate")
+            result = model.transcribe(waveform, language=language, task="translate")
         elif src_flores != tgt_lang:
             emit({"type": "status", "msg": f"{family}: translating {src_flores} → {tgt_lang} (+{time.time() - _t0:.0f}s)"})
             before = [(s.get("text") or "").strip() for s in result.get("segments", [])]
@@ -204,7 +244,7 @@ def main():
             if not nllb_translate.translation_viable(before, after):
                 # Nothing came back translatable — fall back to Whisper.
                 emit({"type": "status", "msg": f"{family} translation failed — re-running with Whisper translate"})
-                result = model.transcribe(media_path, language=language, task="translate")
+                result = model.transcribe(waveform, language=language, task="translate")
         # src == tgt: source is already English — pass through
 
     # Re-apply the blocklist: the fallback branches produced fresh unfiltered
@@ -227,7 +267,7 @@ def main():
             )
             aligned = whisperx.align(
                 result["segments"], align_model, metadata,
-                media_path, device, return_char_alignments=False,
+                waveform, device, return_char_alignments=False,
             )
             result["segments"] = aligned.get("segments", [])
             emit({

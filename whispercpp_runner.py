@@ -38,7 +38,7 @@ import sys
 import tempfile
 import time
 
-from core.audio import decode_to_wav16k
+from core.audio import choose_audio_stream, decode_to_wav16k, list_audio_streams
 from core.cues import apply_quality
 from core.procs import run_captured
 from core.srt import write_srt
@@ -329,8 +329,13 @@ def main():
         "msg": f"whisper.cpp: {resolved_model} ({'CPU' if device == 'cpu' else 'auto device'})...",
     })
 
+    streams = list_audio_streams(media_path)
+    stream_index, why = choose_audio_stream(streams, language)
+    if len(streams) > 1:
+        emit({"type": "status", "msg": f"Audio track: {why}"})
+
     try:
-        wav_path = decode_to_wav16k(media_path)
+        wav_path = decode_to_wav16k(media_path, stream_index=stream_index)
     except RuntimeError as exc:
         emit({"type": "error", "msg": str(exc)})
         sys.exit(1)

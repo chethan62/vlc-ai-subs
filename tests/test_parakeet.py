@@ -24,6 +24,13 @@ def runner():
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_audio_probe(runner, monkeypatch):
+    """No ffprobe shell-out on fake media: a fixture file has no streams, and the
+    track choice itself is covered in tests/test_audio_select.py."""
+    monkeypatch.setattr(runner, "list_audio_streams", lambda *a, **k: [])
+
+
 def test_tokens_to_words(runner):
     """BPE tokens with per-token timestamps merge into real words."""
     tokens = [" Well", ",", " I", " don", "'", "t", " w", "ish", " to", " go", "."]
@@ -312,7 +319,7 @@ def _arm_runner(runner, monkeypatch, tmp_path, variant="v2"):
     monkeypatch.setattr(runner, "load_float32_16k", lambda _p: [0.0] * 16000)
     counter = [0]
 
-    def fake_decode(_media):
+    def fake_decode(_media, timeout=None, stream_index=None):
         counter[0] += 1
         # A fresh file each call: the runner unlinks the decoded wav.
         return _write_16k_wav(tmp_path / f"decoded_{counter[0]}.wav")

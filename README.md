@@ -16,6 +16,7 @@ or real-time on-screen captions.
 | **Auto engine** | Auto (default) picks the fastest engine that covers the language (Parakeet v2/v3), else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) / CPU |
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
 | **Two modes** | Generate & Load SRT (default) or OSD captions (Real-time OSD — each cue is pushed to the OSD as it is produced) |
+| **Right audio track** | Multi-audio releases (DUAL/MULTi) are common and ffmpeg's default is the *first* track — the dub. The plugin picks the one matching your language, skips audio-description/commentary tracks, and says which it used |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
 | **Readable cues** | Text wrapped to the *language's* line width from the Netflix timed-text guides (42 chars Latin, 16 Chinese/Korean, 13 Japanese, ≤2 lines); cues over 7 s split at sentence boundaries (cut into equal runs for unpunctuated CJK); a cue whose text needs longer than 20 CPS *(9 Chinese, 4 Japanese, 12 Korean, 17 most other languages)* is given more time up to the next cue — never fewer words; min-duration and gap cleanup |
 | **Cancel + memory** | Cancel a running transcription; the dialog remembers engine/model/language/task/mode |
@@ -55,6 +56,36 @@ Measured on real files (see `tests/` for the fixtures):
 - a 1,649-cue Chinese file — the longest cue 25.0 s → **7.1 s**, lines over the
   16-character cap **90 → 0**, every character preserved
 - a 47.5-minute English episode — 418 cues, unchanged cue count, no overlaps
+
+## Which audio track
+
+A release can carry several audio tracks, and **ffmpeg's default is the first
+one** — which on real releases is the dub rather than the dialogue:
+
+| Real file | Tracks | ffmpeg's default |
+| --- | --- | --- |
+| `…MULTi.VFF….mkv` | 1 `fre` (VFF) · 2 `eng` · 3 `eng` *"Descriptive"* | track 1 — French |
+| `…DUAL….mkv` | 1 `por` · 2 `eng` (both flagged `default=1`) | track 1 — Portuguese |
+
+So asking for English subtitles transcribed the French audio, and an English-only
+model answered with confident nonsense instead of an error:
+
+```
+Tromaris troubles in sentence patrimony genétic and young women.
+```
+
+The plugin now chooses deliberately: **the track matching your language** (container
+tags are ISO 639-2 — `fre`, `eng`, `por` — while the UI speaks 639-1, so both are
+understood), **skipping descriptive and commentary tracks** (measured: the
+descriptive track above carries no standard flag at all, only `title=Descriptive`),
+and otherwise taking the first track that is dialogue. It reports its choice in the
+status line, and `VSCL_AISUBS_AUDIO_TRACK` overrides it (an index, a position, or a
+language). The same file now yields actual dialogue:
+
+```
+Did you know that?
+I did not.
+```
 
 ## Quick Start
 
@@ -270,6 +301,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_TIMEOUT` | seconds (`0` = no limit) | 4 h transcribe / 6 h translate | backend subprocess ceiling (long films) |
 | `VSCL_AISUBS_MAX_LINE` | characters (min 8) | 42 (16 CJK, 13 Japanese) | cue line width |
 | `VSCL_AISUBS_MAX_CPS` | characters/second (1–60) | 20 (9 CJK, 4 Japanese) | reading-speed ceiling |
+| `VSCL_AISUBS_AUDIO_TRACK` | index, position or language | auto (match the requested language) | which audio stream to transcribe |
 | `VSCL_AISUBS_WHISPERCPP_BIN` | path to `whisper-cli` | auto-detected | whisper.cpp engine |
 | `VSCL_AISUBS_PARAKEET_V3` | `1` | `0` | `install.sh` only: also install the multilingual v3 model |
 | `VSCL_AISUBS_PARAKEET_VERSION` | `v2` \| `v3` | auto (by language) | Parakeet: force one model |
@@ -390,7 +422,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 212 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 222 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

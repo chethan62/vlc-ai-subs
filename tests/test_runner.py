@@ -132,6 +132,24 @@ def test_hardened_asr_options(runner):
 # file realtime-OSD runs deliberately write to a temp path instead (and a
 # read-only media dir would make it an error).
 
+@pytest.fixture(autouse=True)
+def _fake_audio_selection(runner, monkeypatch, tmp_path):
+    """Keep these tests off the real media pipeline.
+
+    The runner now asks ffprobe which audio track to transcribe (and decodes it
+    itself, instead of letting WhisperX read the media twice). A test's fake media
+    has no streams, so probe would shell out and return nothing on every run.
+    Stub the seam with the REAL signature: a friendlier fake once hid a real
+    TypeError for a whole release. test_audio_select.py owns this behaviour.
+    """
+    monkeypatch.setattr(runner, "list_audio_streams", lambda *a, **k: [])
+    monkeypatch.setattr(
+        runner, "decode_to_wav16k",
+        lambda _p, timeout=None, stream_index=None: str(tmp_path / "decoded.wav"),
+    )
+    monkeypatch.setattr(runner, "_load_waveform", lambda _p: [0.0] * 16000)
+
+
 class _FakeWxModel:
     def transcribe(self, path, language=None, task=None):
         return {

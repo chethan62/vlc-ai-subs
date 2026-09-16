@@ -41,6 +41,7 @@ import sys
 import time
 import traceback
 
+from core.audio import choose_audio_stream, list_audio_streams
 from core.emitter import Emitter
 from core.procs import terminate_all
 from core.srt import write_srt
@@ -324,6 +325,20 @@ def main():
         "type": "status",
         "msg": f"Backend: {backend.name()} — {model_name} ({language or 'auto'}, {task})",
     })
+
+    # Which audio track will be transcribed. Worth saying out loud on multi-track
+    # releases: ffmpeg's own default is the first stream, and on a real DUAL/VFF
+    # file that is the dub — an English-only model handed French audio answers with
+    # confident nonsense rather than an error. The runners choose the same way
+    # (core/audio.py), so this line cannot disagree with what they decode.
+    try:
+        streams = list_audio_streams(media_path)
+        if len(streams) > 1:
+            _, why = choose_audio_stream(streams, language)
+            emitter.emit({"type": "status", "msg": f"Audio track: {why}"})
+    except Exception as exc:              # a diagnostic must never break a run
+        if debug:
+            _log_debug(f"audio-track report failed: {exc}")
 
     # Transcribe
     emitter.emit({"type": "status", "msg": "Transcribing..."})

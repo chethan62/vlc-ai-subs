@@ -35,7 +35,7 @@ import time
 import wave
 from typing import TYPE_CHECKING
 
-from core.audio import SAMPLE_RATE, decode_to_wav16k
+from core.audio import SAMPLE_RATE, choose_audio_stream, decode_to_wav16k, list_audio_streams
 from core.cues import apply_quality
 from core.srt import write_srt
 
@@ -230,8 +230,12 @@ def main():
         model_type="nemo_transducer", modeling_unit="cjkchar",
     )
 
+    streams = list_audio_streams(media_path)
+    stream_index, why = choose_audio_stream(streams, language)
+    if len(streams) > 1:
+        emit({"type": "status", "msg": f"Audio track: {why}"})
     emit({"type": "status", "msg": f"Parakeet: decoding audio (+{time.time()-t0:.0f}s)"})
-    wav_path = decode_to_wav16k(media_path)
+    wav_path = decode_to_wav16k(media_path, stream_index=stream_index)
     samples = load_float32_16k(wav_path)
     os.unlink(wav_path)
 
