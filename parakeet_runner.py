@@ -269,7 +269,7 @@ def main():
     # wrap the cue text (broadcast-style line breaks) + clean timing gaps.
     from core.blocklist import filter_segments
     segments = filter_segments(segments)
-    segments = apply_quality(segments)
+    segments = apply_quality(segments, language="en" if task == "translate" else language)
 
     # Emit each segment for the caller (status / OSD progress).
     for i, seg in enumerate(segments, 1):

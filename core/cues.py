@@ -31,8 +31,32 @@ MIN_DURATION = 1.0
 MIN_GAP = 0.08  # two frames at 25 fps — avoid back-to-back cue flicker
 MIN_VISIBLE = 0.2
 # One cue on screen longer than this is past what a viewer can hold in one
-# glance (BBC/Netflix guidance is ~7 s), so it is split at sentence boundaries.
+# glance (Netflix's maximum event duration is 7 s), so it is split at sentence
+# boundaries.
 MAX_CUE_SECONDS = 7.0
+# Reading-speed and line-length ceilings, straight from the Netflix Timed Text
+# Style Guides (the most widely cited public subtitle spec; the BBC's 160-180 wpm
+# target lands in the same range for Latin scripts):
+#
+#   English 20 CPS / 42 chars per line      most other Latin+ 17 CPS / 42
+#   Chinese  9 CPS / 16 full-width chars    Japanese 4 CPS / 13    Korean 12 / 16
+#
+# CJK characters are full-width and carry far more meaning each, which is why the
+# caps are so much tighter. A cue whose text needs longer than its span gets more
+# time up to the next cue — the guidelines say to add time before cutting words,
+# and this plugin never rewrites dialogue.
+# VSCL_AISUBS_MAX_CPS / VSCL_AISUBS_MAX_LINE override both globally.
+LANGUAGE_LIMITS = {
+    "en": (20.0, 42),
+    "zh": (9.0, 16),
+    "ja": (4.0, 13),
+    "ko": (12.0, 16),
+}
+DEFAULT_LIMITS = (17.0, 42)   # everything else in the guides' Latin/other rows
+ENGLISH_LIMITS = LANGUAGE_LIMITS["en"]
+
+_KANA = re.compile("[\u3040-\u30ff]")
+_HANGUL = re.compile("[\uac00-\ud7af]")
 
 _WS = re.compile(r"\s+")
 # Sentence ends: ASCII + CJK terminators (CJK needs no trailing space).
@@ -62,6 +86,45 @@ def line_limit(max_chars: int | None = None) -> int:
     if raw.isdigit():
         return max(8, int(raw))
     return MAX_LINE_CHARS
+
+
+def limits_for(language: str | None = None, text: str = "") -> tuple[float, int]:
+    """Reading-speed (CPS) and line-length caps for this cue.
+
+    The language decides when it is known; otherwise the text's own script does,
+    because an `auto` run whose language was never detected still must not be
+    wrapped as if it were English. Japanese kana win over Han characters, since a
+    Japanese line may contain both.
+    """
+    code = (language or "").strip().lower().replace("_", "-").split("-")[0]
+    if code and code not in ("en", ""):
+        return LANGUAGE_LIMITS.get(code, DEFAULT_LIMITS)
+    # English (or unknown): the script still decides. A run tagged English cannot
+    # honestly produce Han text, so the text wins over a wrong tag.
+    if text:
+        if _KANA.search(text):
+            return LANGUAGE_LIMITS["ja"]
+        if _HANGUL.search(text):
+            return LANGUAGE_LIMITS["ko"]
+        if _CJK.search(text):
+            return LANGUAGE_LIMITS["zh"]
+    return ENGLISH_LIMITS
+
+
+def cps_limit(max_cps: float | None = None) -> float:
+    """Reading-speed ceiling: the argument, else VSCL_AISUBS_MAX_CPS, else 20.
+
+    A value below 1 would make every cue need minutes of screen time, so junk or
+    absurd settings fall back to the default rather than mangling the timings.
+    """
+    if max_cps is not None:
+        return max(1.0, float(max_cps))
+    raw = os.environ.get("VSCL_AISUBS_MAX_CPS", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return ENGLISH_LIMITS[0]
+    return value if 1.0 <= value <= 60.0 else ENGLISH_LIMITS[0]
 
 
 def _split_units(text: str, cjk: bool) -> list[str]:
@@ -140,7 +203,8 @@ def wrap(text: str, max_chars: int | None = None, max_lines: int = MAX_LINES) ->
     return _join_units(units[:split], cjk) + "\n" + _join_units(units[split:], cjk)
 
 
-def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS) -> list[dict]:
+def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS,
+                   line_chars: int | None = None) -> list[dict]:
     """Split one over-long cue at sentence boundaries; returns one or more cues.
 
     Without CUDA alignment to re-segment the transcript (CPU, AMD/Intel, or a
@@ -154,28 +218,58 @@ def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS) -> list[dict
     neighbour rather than flashing on and off.
     """
     duration = seg["end"] - seg["start"]
-    if duration <= max_seconds:
+    text = normalize(seg.get("text", ""))
+    # Over-long means "cannot be shown within the script's own limits": either too
+    # long on screen (7 s), or more text than max_lines x line_chars of full-width
+    # CJK can hold (the Netflix guides cap CJK lines at 13-16 characters, where
+    # Latin allows 42). A brief but dense CJK cue is split for that reason alone.
+    over_capacity = (
+        bool(line_chars) and bool(text)
+        and bool(_CJK.search(text))
+        and len(text) > int(line_chars) * MAX_LINES
+    )
+    if duration <= max_seconds and not over_capacity:
         return [seg]
 
-    pieces = [p.strip() for p in _SENTENCE_BREAK.split(normalize(seg.get("text", "")))]
+    pieces = [p.strip() for p in _SENTENCE_BREAK.split(text)]
     pieces = [p for p in pieces if p]
     if len(pieces) < 2:
-        return [seg]
+        # No sentence break to split on. For CJK that is the normal case — the
+        # script has no spaces and its ASR output often carries no terminators at
+        # all (measured: 26 of the 27 over-long cues in a real Chinese file), so
+        # cut it into equal character runs instead. That is standard practice for
+        # CJK subtitles, and the alternative is a cue nobody can finish reading.
+        text = normalize(seg.get("text", ""))
+        if line_chars and text and _CJK.search(text):
+            per_cue = max(1, int(line_chars) * MAX_LINES)
+            chunks = max(2, int(-(-len(text) // per_cue)), int(-(-duration // max_seconds)))
+            size = -(-len(text) // chunks)
+            pieces = [text[i:i + size] for i in range(0, len(text), size)]
+        if len(pieces) < 2:
+            return [seg]
 
     # Fold in fragments that would be too brief to read on their own: "Mm-hmm."
     # at 0.2 s is a flicker, and its time cannot be extended into the next piece.
+    def _join(a: str, b: str) -> str:
+        # CJK writes no spaces between words, so folding two CJK fragments with
+        # one opens a gap that was never in the audio (measured: 108 stray spaces
+        # in a real Chinese file before this).
+        if a and b and _CJK.search(a[-1]) and _CJK.search(b[0]):
+            return a + b
+        return f"{a} {b}"
+
     total_chars = sum(len(p) for p in pieces) or 1
     merged: list[str] = []
     for piece in pieces:
         share = duration * len(piece) / total_chars
         if merged and share < MIN_DURATION:
-            merged[-1] = f"{merged[-1]} {piece}"
+            merged[-1] = _join(merged[-1], piece)
         else:
             merged.append(piece)
     # A too-brief first piece has no predecessor to fold into — give it to the
     # piece that follows instead.
     if len(merged) > 1 and duration * len(merged[0]) / total_chars < MIN_DURATION:
-        merged[1] = f"{merged[0]} {merged[1]}"
+        merged[1] = _join(merged[0], merged[1])
         merged.pop(0)
     pieces = merged
 
@@ -197,32 +291,53 @@ def apply_quality(
     min_duration: float = MIN_DURATION,
     min_gap: float = MIN_GAP,
     max_cue_seconds: float = MAX_CUE_SECONDS,
+    max_cps: float | None = None,
+    language: str | None = None,
 ) -> list[dict]:
     """Split over-long cues, wrap cue text, clean up timings; returns new dicts.
 
-    - cues longer than *max_cue_seconds* → split at sentence boundaries
-    - text → :func:`wrap` (empty cues are dropped)
+    - cues longer than *max_cue_seconds* → split at sentence boundaries (for CJK,
+      into equal character runs when the text has no punctuation to split on)
+    - text → :func:`wrap`, at the language's line width from the Netflix timed-text
+      guides (English 42, Chinese/Korean 16 full-width, Japanese 13); VSCL_AISUBS_MAX_LINE wins
+    - a cue whose text exceeds the language's reading-speed ceiling → end extended
+      toward the next cue (the guidelines prefer adding time to cutting words)
     - ``end - start`` extended up to *min_duration* (never into the next cue)
     - cues pushed apart by *min_gap*, keeping at least *min_visible* on screen
-    A single sentence longer than *max_cue_seconds* stays long: it cannot be
-    split without word timings, and chopping display time mid-sentence is worse
-    than an over-long cue.
+    A cue boxed in by its neighbour keeps its dense text rather than losing words.
     """
+    env_line = os.environ.get("VSCL_AISUBS_MAX_LINE", "").strip()
+    env_cps = os.environ.get("VSCL_AISUBS_MAX_CPS", "").strip()
+    fixed_cps = cps_limit(max_cps) if (max_cps is not None or env_cps) else None
+    fixed_line = max_chars if max_chars is not None else (line_limit(None) if env_line else None)
     out: list[dict] = []
     for seg in segments:
         text = normalize(seg.get("text", ""))
         if not text:
             continue
+        _, auto_line = limits_for(language, text)
+        line_cap = fixed_line or auto_line
         start = max(0.0, float(seg.get("start", 0.0)))
         end = max(start, float(seg.get("end", start)))
-        for piece in split_long_cue({"start": start, "end": end, "text": text}, max_cue_seconds):
-            wrapped = wrap(piece["text"], max_chars, max_lines)
+        for piece in split_long_cue({"start": start, "end": end, "text": text},
+                                   max_cue_seconds, line_cap):
+            wrapped = wrap(piece["text"], line_cap, max_lines)
             if wrapped:
                 out.append({"start": piece["start"], "end": piece["end"], "text": wrapped})
 
     for i, seg in enumerate(out):
         nxt = out[i + 1] if i + 1 < len(out) else None
         ceiling = (nxt["start"] - min_gap) if nxt else None
+
+        # Reading speed: a cue whose text cannot be read in its span gets more
+        # time, up to (never past) the next cue. The ceiling follows the language
+        # (Netflix: 20 CPS English, 17 most others, 9 Chinese, 4 Japanese, 12
+        # Korean), counts every character including spaces, and our own line
+        # break stands in for a space.
+        needed = len(seg["text"].replace("\n", " ")) / (fixed_cps or limits_for(language, seg["text"])[0])
+        if seg["end"] - seg["start"] < needed:
+            target = seg["start"] + needed
+            seg["end"] = target if ceiling is None else min(target, ceiling)
 
         if seg["end"] - seg["start"] < min_duration:
             target = seg["start"] + min_duration

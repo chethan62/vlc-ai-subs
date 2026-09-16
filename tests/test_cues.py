@@ -232,3 +232,109 @@ def test_short_segments_are_untouched_by_the_splitter():
             {"start": 3.2, "end": 6.0, "text": "How are you?"}]
     out = apply_quality([dict(s) for s in segs])
     assert [(c["start"], c["end"]) for c in out] == [(0.0, 3.0), (3.2, 6.0)]
+
+
+# ── Reading speed and per-language limits (Netflix timed-text guides) ────────
+# The plugin used to have one line width (42) and no reading-speed notion at all.
+# Netflix's per-language guides — 20 CPS English, 17 most other languages, 9
+# Chinese, 4 Japanese, 12 Korean, with 42- vs 13-16-character lines — are the
+# most widely cited public spec, so they are what the cue pass now enforces.
+
+
+def test_limits_follow_the_language_and_the_script():
+    from core.cues import limits_for
+
+    assert limits_for("en") == (20.0, 42)
+    assert limits_for("zh") == (9.0, 16)
+    assert limits_for("ja") == (4.0, 13)
+    assert limits_for("ko") == (12.0, 16)
+    assert limits_for("de")[0] == 17.0            # the guides' "all other languages"
+    assert limits_for("zh-Hans") == (9.0, 16)     # region subtags do not matter
+    assert limits_for(None, "ちょっと") == (4.0, 13)      # script decides when unknown
+    assert limits_for(None, "안녕하세요") == (12.0, 16)
+    assert limits_for(None, "测试一下") == (9.0, 16)
+    assert limits_for(None, "Hello there") == (20.0, 42)
+    assert limits_for("en", "测试一下") == (9.0, 16)      # a wrong tag loses to the text
+
+
+def test_a_dense_cue_is_given_more_time_not_fewer_words():
+    # 100 characters at 20 CPS needs 5 s; it starts with 1 s and the next cue is
+    # far away, so the time is simply given to it.
+    segs = [{"start": 0.0, "end": 1.0, "text": "x" * 100},
+            {"start": 30.0, "end": 31.0, "text": "later"}]
+    out = apply_quality(segs)
+    assert out[0]["end"] == pytest.approx(5.0, abs=0.01)
+    assert len(out[0]["text"]) == 100          # nothing was cut short to fit
+
+
+def test_reading_speed_time_never_runs_into_the_next_cue():
+    segs = [{"start": 0.0, "end": 1.0, "text": "x" * 200},
+            {"start": 2.0, "end": 4.0, "text": "next"}]
+    out = apply_quality(segs)
+    assert out[0]["end"] <= out[1]["start"] - 0.08 + 1e-6
+    assert out[0]["end"] == pytest.approx(1.92, abs=0.01)   # it took all the slack
+
+
+def test_the_cjk_ceiling_gives_more_time_than_the_english_one():
+    segs = [{"start": 0.0, "end": 1.0, "text": "x" * 30},
+            {"start": 60.0, "end": 61.0, "text": "later"}]
+    zh = apply_quality([dict(s) for s in segs], language="zh")[0]["end"]
+    en = apply_quality([dict(s) for s in segs], language="en")[0]["end"]
+    assert zh == pytest.approx(30 / 9, abs=0.01)     # 9 CPS: 3.33 s
+    assert en == pytest.approx(30 / 20, abs=0.01)    # 20 CPS: 1.50 s
+    assert zh > en
+
+
+def test_max_cps_env_override(monkeypatch):
+    segs = [{"start": 0.0, "end": 1.0, "text": "x" * 34}]
+    assert apply_quality(segs)[0]["end"] == pytest.approx(1.7, abs=0.01)   # 34/20
+    monkeypatch.setenv("VSCL_AISUBS_MAX_CPS", "17")
+    assert apply_quality(segs)[0]["end"] == pytest.approx(2.0, abs=0.01)
+    monkeypatch.setenv("VSCL_AISUBS_MAX_CPS", "junk")
+    assert apply_quality(segs)[0]["end"] == pytest.approx(1.7, abs=0.01)   # falls back
+
+
+def test_line_width_follows_the_language(monkeypatch):
+    monkeypatch.delenv("VSCL_AISUBS_MAX_LINE", raising=False)
+    out = apply_quality([{"start": 0.0, "end": 3.0, "text": "测" * 30}], language="zh")
+    assert all(len(l) <= 16 for c in out for l in c["text"].split("\n"))
+    assert "".join(c["text"] for c in out).replace("\n", "") == "测" * 30
+
+
+def test_an_unpunctuated_cjk_cue_is_cut_into_readable_runs():
+    # Real case: a 25 s Chinese cue with no terminator anywhere, so sentence
+    # splitting has nothing to work with — it becomes equal character runs.
+    cue = {"start": 0.0, "end": 25.0, "text": "说不定现在还在哪一个山沟里给人算命片饭吃"}
+    out = apply_quality([dict(cue)], language="zh")
+    assert len(out) > 1
+    assert max(c["end"] - c["start"] for c in out) <= MAX_CUE_SECONDS + 0.5
+    assert all(len(l) <= 16 for c in out for l in c["text"].split("\n"))
+    assert "".join(c["text"] for c in out).replace("\n", "") == cue["text"]
+    assert out[0]["start"] == 0.0 and out[-1]["end"] == 25.0   # span preserved
+
+
+def test_an_unpunctuated_latin_cue_is_left_alone():
+    # "Lucky You" over a 44 s title card: chopping it up would be pointless, and
+    # padding it with invented text is not this program's business.
+    cue = {"start": 0.0, "end": 44.0, "text": "Lucky You"}
+    assert apply_quality([dict(cue)], language="en") == [cue]
+
+
+def test_a_brief_but_dense_cjk_cue_is_split_for_its_lines():
+    # 40 characters is more than 2 x 16 full-width characters, however brief.
+    out = apply_quality([{"start": 0.0, "end": 4.0, "text": "测" * 40}], language="zh")
+    assert len(out) > 1
+    assert all(len(l) <= 16 for c in out for l in c["text"].split("\n"))
+
+
+def test_folding_cjk_fragments_adds_no_space():
+    # A two-character opening ("好。") shares 0.95 s of a 20 s cue: below the 1 s
+    # floor, so it folds back into its neighbour — with no space, because CJK
+    # writes none there. (An earlier version of this test never folded at all and
+    # passed with the bug still in place, which the negative control caught.)
+    cue = {"start": 0.0, "end": 20.0, "text": "好。" + "测" * 40}
+    out = split_long_cue(dict(cue), MAX_CUE_SECONDS, 16)
+    assert len(out) == 1, "the stub should have folded back in"
+    joined = out[0]["text"].replace("\n", "")
+    assert joined.startswith("好。测")
+    assert "。 " not in joined

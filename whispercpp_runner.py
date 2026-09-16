@@ -353,7 +353,8 @@ def main():
     emit({"type": "status", "msg": f"whisper.cpp: transcription done (+{elapsed:.0f}s)"})
 
     from core.blocklist import filter_segments
-    segments = apply_quality(filter_segments(segments))
+    segments = apply_quality(filter_segments(segments),
+                             language="en" if task == "translate" else language)
 
     if not segments:
         emit({"type": "status", "msg": "No speech detected."})

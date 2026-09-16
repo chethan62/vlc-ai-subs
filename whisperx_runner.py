@@ -245,8 +245,13 @@ def main():
             })
 
     # 4. Wrap the cue text (broadcast-style line breaks) and clean the timing
-    # gaps before emitting — the SRT and the OSD feed share this text.
-    segments = apply_quality(result.get("segments", []))
+    # gaps before emitting — the SRT and the OSD feed share this text, using the
+    # reading-speed / line-length ceilings of the language the subtitles are
+    # actually IN: the detected source language on a transcribe run, English on
+    # every translate path of this runner (Whisper's own translate, or the
+    # NLLB/M2M cascade — both emit English).
+    text_language = "en" if (translator and task == "translate") else (result.get("language") or language)
+    segments = apply_quality(result.get("segments", []), language=text_language)
     out_segments = []
     count = 0
 

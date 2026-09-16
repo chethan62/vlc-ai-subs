@@ -17,12 +17,44 @@ or real-time on-screen captions.
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
 | **Two modes** | Generate & Load SRT (default) or OSD captions (Real-time OSD — each cue is pushed to the OSD as it is produced) |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
-| **Readable cues** | Text wrapped to ≤2 lines × 42 chars (CJK-aware); cues over 7 s split at sentence boundaries; min-duration and gap cleanup |
+| **Readable cues** | Text wrapped to the *language's* line width from the Netflix timed-text guides (42 chars Latin, 16 Chinese/Korean, 13 Japanese, ≤2 lines); cues over 7 s split at sentence boundaries (cut into equal runs for unpunctuated CJK); a cue whose text needs longer than 20 CPS *(9 Chinese, 4 Japanese, 12 Korean, 17 most other languages)* is given more time up to the next cue — never fewer words; min-duration and gap cleanup |
 | **Cancel + memory** | Cancel a running transcription; the dialog remembers engine/model/language/task/mode |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
 | **VLC 3.x now, 4.x-ready** | Every Lua API it uses is present in VLC 4.0's source (checked); no 4.0 build has been run yet |
 | **Cross-platform** | Linux, macOS, Windows (native, snap, flatpak) |
+
+## Subtitle standards
+
+Cue text is not free-form — the plugin applies the published limits so the output
+is readable and passes a QC pass rather than merely looking plausible.
+
+| Subtitle language | Reading speed | Line width | Max on screen | Min gap |
+| --- | --- | --- | --- | --- |
+| English | 20 CPS | 42 chars | 7 s | 2 frames |
+| Spanish, French, German, Hindi, Russian, … | 17 CPS | 42 chars | 7 s | 2 frames |
+| Chinese | 9 CPS | 16 full-width chars | 7 s | 2 frames |
+| Korean | 12 CPS | 16 full-width chars | 7 s | 2 frames |
+| Japanese | 4 CPS | 13 full-width chars | 7 s | 2 frames |
+
+Source: the [Netflix Timed Text Style Guides](https://partnerhelp.netflixstudios.com/hc/en-us/articles/215758617-Timed-Text-Style-Guide-General-Requirements)
+(the most widely cited public subtitle spec; the BBC's 160–180 wpm target lands in
+the same range for Latin scripts). CPS counts every character, spaces and
+punctuation included.
+
+Where a cue carries more text than its span can show at that speed, the plugin
+**extends the cue toward the next one** rather than shortening the dialogue — the
+guidance is explicit that adding time is preferred to cutting words, and this
+plugin never rewrites what was said. Where the speech is continuous and there is
+no slack to take, the cue stays dense; the alternative would be dropping words.
+
+Measured on real files (see `tests/` for the fixtures):
+
+- a 5-minute English episode — 8 of 49 cues were given a little more time, 1.5 s
+  in total, none of them overlapping the next cue
+- a 1,649-cue Chinese file — the longest cue 25.0 s → **7.1 s**, lines over the
+  16-character cap **90 → 0**, every character preserved
+- a 47.5-minute English episode — 418 cues, unchanged cue count, no overlaps
 
 ## Quick Start
 
@@ -236,7 +268,8 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_DEBUG` | `1` \| unset | unset | debug logs to stderr + `/tmp` (main CLI, runners) |
 | `VSCL_AISUBS_SKIP_NLLB` | `1` \| unset | unset | `install.sh` only: skip the NLLB model download |
 | `VSCL_AISUBS_TIMEOUT` | seconds (`0` = no limit) | 4 h transcribe / 6 h translate | backend subprocess ceiling (long films) |
-| `VSCL_AISUBS_MAX_LINE` | characters (min 8) | 42 (20 for CJK) | cue line width |
+| `VSCL_AISUBS_MAX_LINE` | characters (min 8) | 42 (16 CJK, 13 Japanese) | cue line width |
+| `VSCL_AISUBS_MAX_CPS` | characters/second (1–60) | 20 (9 CJK, 4 Japanese) | reading-speed ceiling |
 | `VSCL_AISUBS_WHISPERCPP_BIN` | path to `whisper-cli` | auto-detected | whisper.cpp engine |
 | `VSCL_AISUBS_PARAKEET_V3` | `1` | `0` | `install.sh` only: also install the multilingual v3 model |
 | `VSCL_AISUBS_PARAKEET_VERSION` | `v2` \| `v3` | auto (by language) | Parakeet: force one model |
@@ -357,8 +390,8 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 188 tests (model-free)
-bash tests/install_branches.sh                               # installer branch matrix: 18 checks
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 212 tests (model-free)
+bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 
 The installer's engine-selection and failure-reporting branches — the ones that
