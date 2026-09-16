@@ -455,6 +455,14 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   7 s in those 90 s). The plugin's own `apply_quality` pass takes that to 0 and 0 with every
   word kept — which is why the two layers stay separate: engine supplies text and timings, the
   plugin enforces the published cue limits.
+- **Diarization is available in the engine and deliberately not used here.** It was measured
+  against the professional track's dialogue dashes (the ground truth for speaker changes) and
+  failed: on the densest dash window it flagged 6 of 16 real speaker changes within 0.7 s
+  against a random-placement baseline of 2.9, and it labels *mid-sentence* fragments as
+  different speakers in every configuration tried (`--diarize-num-speakers 2` included). A
+  speaker label that changes mid-sentence is a visible error, so nothing is exposed — no
+  dashes, no labels, no flag. Numbers and method in
+  `.research/2026-09-16-diarization-evaluated.md`.
 
 ## Models
 
