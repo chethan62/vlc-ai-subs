@@ -84,22 +84,22 @@ The one standard the plugin cannot yet meet is reading speed: 453 cues (24.0 %) 
 that film carry more text than 20 CPS allows in the span the engine gave them, the
 worst needing 62 CPS. (The grouping fix above took that from 505 cues / 27.3 %: cue
 spans used to end where a word's own timestamp sat, which was its *start*, so every
-span was short.) **What remains is a property of the model's timestamps, and it is
-measurable:** read the words per minute implied by a cue's own span and you get
-sentences at 409 and 450 wpm, where natural speech is 120–160. Timestamps that place
-six words in 0.8 s are compressed, and a cue's span is built from exactly those
-timestamps. The film averages about 6 CPS, so the time exists — the words are simply
-reported closer together than they were spoken, which also ends each cue slightly
-early. Confirmed on the audio itself, not inferred: whisper.cpp, given a 32 s stretch
-Parakeet transcribed as nothing, answers `(eerie music)` — the silence is real, so
-this is timing, not dropped audio.
+span was short.) This is a timing limitation, not a text-handling one — and the honest
+version of the evidence is narrower than it first looked. A few cues imply physically
+impossible speech (450–580 wpm, i.e. 8–10 words per second) and those are real
+timestamp defects; but most of the apparent excess is the *metric*: a cue's span runs to
+the last word's start, not the end of its audio, so three-word cues lose about a third
+of their span and short function-word lines read far faster than they are. Speech itself
+is 120–160 wpm. The time exists — the film averages ~6 CPS — the words are simply
+reported closer together than they were spoken.
 
-Fixing it properly needs word-level alignment, which the **WhisperX engine has**; the
-Parakeet route trades that timing accuracy for CPU speed. The plugin never shortens
-the text to hide it. (Redistributing time *within* a dense run was tried and rejected
-on measurement: of the 505 dense cues only 203 sat in a run with time to spare, and
-fixing those meant moving captions by more than half a second — a sync error is worse
-than a dense caption. It bought 505 → 480, so it was reverted.)
+**WhisperX does not fix this, and the earlier claim that it did has been withdrawn.**
+Measured on the same 60 s minute: Parakeet median 217 wpm / max 500, WhisperX (aligned)
+median **244** / max **580**, with tighter cue spans (median 1.00 s). Its alignment is
+real, but its cue timings are no more plausible. See
+`.research/2026-09-16-vad-and-timing.md` for the full comparison, the VAD measurements,
+and the ranked list of what still needs improving. The plugin never shortens the text to
+hide any of this.
 
 Measured on real files (see `tests/` for the fixtures):
 
