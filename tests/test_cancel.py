@@ -53,6 +53,28 @@ def test_sweep_stale_temp_is_age_gated(tmp_path, monkeypatch):
     assert not old.exists()
 
 
+def test_sweep_covers_the_extension_temp_files_not_just_wavs(tmp_path, monkeypatch):
+    """A killed VLC leaves the mirror/.pid/temp-srt behind too (measured: two mirrors
+    and a temp srt). The debug log is not ours to delete."""
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    stale = time.time() - 3 * 3600
+    for name in ("aisubs_1789564721_252943.txt", "aisubs_1789564721_252943.pid",
+                 "aisubs_4uozf191.srt", "aisubs_99.wav"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        os.utime(path, (stale, stale))
+    keep = tmp_path / "aisubs_debug.log"          # a log, not a temp artefact
+    keep.write_bytes(b"x")
+    os.utime(keep, (stale, stale))
+    foreign = tmp_path / "something-else.srt"     # not our naming scheme
+    foreign.write_bytes(b"x")
+    os.utime(foreign, (stale, stale))
+
+    assert audio_mod.sweep_stale_temp() == 4
+    assert keep.exists()
+    assert foreign.exists()
+
+
 def test_decode_registers_its_temp_while_it_runs(monkeypatch):
     """The temp must be *in the registry* during the decode, or nothing can clean it."""
     seen = {}

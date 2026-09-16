@@ -27,6 +27,11 @@ DECODE_TIMEOUT = 600
 PROBE_TIMEOUT = 30
 # Temp wavs are named with this prefix so a stale sweep can recognise them.
 TEMP_PREFIX = "aisubs_"
+# Everything this plugin leaves in the temp dir: the decoded wav, the extension's
+# mirror file (given to the CLI as a path) and its .pid, and the temp .srt that
+# realtime mode writes. A killed VLC abandons all of them; the debug log keeps its
+# own .log suffix and is deliberately not swept.
+TEMP_SUFFIXES = (".wav", ".txt", ".pid", ".srt")
 
 # Decoded wavs still on disk, so a cancelled run can clean up after itself. A
 # cancelled or killed run leaves the half-written file otherwise: measured, one
@@ -218,11 +223,12 @@ def cleanup_temp() -> int:
 
 
 def sweep_stale_temp(max_age: float = 7200.0) -> int:
-    """Delete abandoned temp wavs older than *max_age* seconds. Returns the count.
+    """Delete abandoned temp files older than *max_age* seconds. Returns the count.
 
     A SIGKILL (or VLC crashing) leaves no chance to clean up, so the next run
-    sweeps what is left. Age-gated: another VLC window's decode is minutes old at
-    most, never hours.
+    sweeps what is left: the decoded wav, and the extension's mirror/.pid/temp-srt.
+    Measured leftovers from killed runs: two mirrors and a temp srt. Age-gated,
+    because another VLC window's run is minutes old at most, never hours.
     """
     import time
 
@@ -232,7 +238,7 @@ def sweep_stale_temp(max_age: float = 7200.0) -> int:
     except OSError:
         return 0
     for name in names:
-        if not (name.startswith(TEMP_PREFIX) and name.endswith(".wav")):
+        if not (name.startswith(TEMP_PREFIX) and name.endswith(TEMP_SUFFIXES)):
             continue
         path = os.path.join(tempfile.gettempdir(), name)
         try:

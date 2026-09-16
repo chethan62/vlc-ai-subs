@@ -133,8 +133,19 @@ left an **87 MB partial wav** in `/tmp` — a 145-minute film would leave ~280 M
 every cancelled run added another.
 
 A run killed outright (SIGKILL, or VLC crashing) gets no chance to clean up, so each
-new run sweeps `/tmp/aisubs_*.wav` older than two hours — age-gated, so a second VLC
-window's fresh decode is never touched.
+new run sweeps what it left in `/tmp` — the decoded wav, the extension's mirror file,
+its `.pid`, and realtime mode's temp `.srt` — but only files older than two hours, so a
+second VLC window's live run is never touched. (The debug log has its own `.log` suffix
+and is left alone.)
+
+## When a run dies
+
+Every runner ends a run with a terminal event — `done` or `error`. A run that stops
+without one was killed or crashed, and it can exit **0** with an empty stdout: measured
+on a 145-minute film, a run died 83 seconds in and the plugin reported a clean finish,
+with the child's stderr — the only clue — discarded. The engines now require that
+terminal event and fail with the child's exit code and stderr tail rather than quietly
+producing nothing.
 
 ## Quick Start
 

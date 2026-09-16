@@ -13,7 +13,7 @@ from typing import Iterable
 from core.procs import run_captured
 from core.timeouts import resolve_timeout
 
-from .base import TranscriptionBackend
+from .base import TranscriptionBackend, check_runner_completed
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root or install dir
 _RUNNER = os.path.join(_BASE, "whisperx_runner.py")
@@ -94,6 +94,7 @@ class WhisperXBackend(TranscriptionBackend):
             )
 
         import json
+        saw_done = False
         for line in proc.stdout.strip().splitlines():
             try:
                 obj = json.loads(line)
@@ -103,9 +104,12 @@ class WhisperXBackend(TranscriptionBackend):
                 yield {"start": obj["start"], "end": obj["end"], "text": obj["text"]}
             elif obj.get("type") == "error":
                 raise RuntimeError(obj.get("msg", "WhisperX error"))
+            elif obj.get("type") == "done":
+                saw_done = True
             elif obj.get("type") == "status" and debug:
                 import sys as _sys
                 _sys.stderr.write(f"[whisperx] {obj.get('msg', '')}\n")
+        check_runner_completed(proc, "WhisperX", saw_done)
 
     def name(self) -> str:
         return "whisperx (aligned)"

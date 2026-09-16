@@ -9,6 +9,26 @@ import abc
 from typing import Iterable
 
 
+def check_runner_completed(proc, name: str, saw_done: bool) -> None:
+    """Raise unless the runner reported its terminal event.
+
+    Every runner ends a run with ``{"type": "done"}`` or ``{"type": "error"}`` (see
+    the protocol in aisubs_whisper.py). A run that stops without either was killed or
+    crashed — and it can exit **0** with a partial or empty stdout, which is
+    indistinguishable from "no speech detected" unless it is checked. Measured on a
+    145-minute film: a run died at 83 s and the plugin reported a clean finish, with
+    the child's stderr (the only clue) discarded. The stderr tail is included here so
+    the next occurrence is diagnosable.
+    """
+    if saw_done:
+        return
+    tail = (getattr(proc, "stderr", "") or "").strip()[-400:]
+    detail = f": {tail}" if tail else " (no stderr)"
+    raise RuntimeError(
+        f"{name} stopped without finishing (rc={getattr(proc, 'returncode', '?')}){detail}"
+    )
+
+
 class TranscriptionBackend(abc.ABC):
     """Transcribe a media file and yield timestamped text segments."""
 
