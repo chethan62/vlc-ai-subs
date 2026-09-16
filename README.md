@@ -119,6 +119,16 @@ one** — which on real releases is the dub rather than the dialogue:
 | `…MULTi.VFF….mkv` | 1 `fre` (VFF) · 2 `eng` · 3 `eng` *"Descriptive"* | track 1 — French |
 | `…DUAL….mkv` | 1 `por` · 2 `eng` (both flagged `default=1`) | track 1 — Portuguese |
 
+**A track can also start late.** When the container begins its audio after its video — a real
+film here starts its audio at 1.008 s, 24 frames at 23.976 fps, against video at 0.000 — every
+timestamp we produce is on the *audio* timeline and so sits that far before its container
+position. The plugin **reports** this instead of correcting it, because correcting it was
+measured and made sync worse: against that film's own professional subtitle track, adding the
+lead back moved cues from 0.53 s early to 0.48 s late and cut cue-start matches from 215 to
+131 (the lead and the model's emission lag partly cancel). The status line reads
+`audio starts 1.008s after the video; subtitles are timed to the audio stream` — which is the
+number to check first when every cue looks uniformly early.
+
 So asking for English subtitles transcribed the French audio, and an English-only
 model answered with confident nonsense instead of an error:
 
@@ -540,7 +550,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 253 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 260 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

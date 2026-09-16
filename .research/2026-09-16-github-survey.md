@@ -116,3 +116,45 @@ than dismissed.
 5. Song/lyric handling with `<i>` (VLC support verified at source).
 6. Unverified and labelled as such: AMD/Intel Vulkan, VLC 4.0 registration, Parakeet v3
    per-language accuracy.
+
+## Addendum — the `hclivess/whisperer` claim, measured
+
+A reader pointed at [hclivess/whisperer](https://github.com/hclivess/whisperer), a mature
+batch subtitle GUI whose changelog contains: *"audio streams that start after the video lost
+their lead during extraction, making every cue early by that amount."* We have the same
+extraction shape, so this was worth checking rather than admiring.
+
+**The lead is real.** On the 145-minute film: video `start_time = 0.000`, audio
+`start_time = 1.008` (24 frames at 23.976 fps). Our decode begins the WAV at the first audio
+sample — container 8738.563 s, decoded WAV 8732.960 s — so every timestamp we produce is on
+the *audio* timeline, 1.008 s before its container position.
+
+**The net error was measured against ground truth**, using the film's own embedded
+professional English subtitle track (1988 cues):
+
+| | cue-start matches (≤0.15 s) | median error | best global fit |
+| --- | --- | --- | --- |
+| as produced | 215 / 1891 | +0.367 s | +0.53 s (749 hits) |
+| + the audio lead | **131** | −0.435 s | −0.48 s (749) |
+| + VAD onset snapping | **268** | +0.294 s | +0.44 s (711) |
+| + both | 161 | −0.419 s | −0.48 s (703) |
+
+Random baseline: ~136 hits.
+
+**Neither correction ships.** Adding the lead back moves every cue from 0.53 s early to
+0.48 s late — worse on cue-start matches — because the lead and the model's own emission lag
+(a TDT model emits a token after the audio it belongs to, ~0.5 s here) partly cancel. VAD
+onset snapping — whisperer's own approach — improves the tight metric (215 → 268) while
+slightly worsening the broad fit (749 → 711), which is not a clear enough win to justify
+changing every timestamp in the file.
+
+So the plugin now **reports** the lead when it is non-zero instead of silently correcting or
+silently ignoring it: `audio starts 1.008s after the video; subtitles are timed to the audio
+stream`. A uniform sync complaint is otherwise very hard to diagnose, and this is the number
+that explains it.
+
+**Reusable method, worth more than the finding:** a container's embedded professional
+subtitle track is ground truth for sync. Extract it (`ffmpeg -map 0:s:N`), then fit a global
+offset by cross-correlating cue starts — a nearest-cue comparison across two differently
+segmented tracks is too noisy to conclude anything from (it gave +0.367 s with a ±3 s
+spread where the fit gave a confident +0.53 s).

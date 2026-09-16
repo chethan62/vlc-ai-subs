@@ -41,7 +41,7 @@ import sys
 import time
 import traceback
 
-from core.audio import choose_audio_stream, list_audio_streams, sweep_stale_temp
+from core.audio import audio_lead_note, choose_audio_stream, list_audio_streams, sweep_stale_temp
 from core.cues import apply_quality
 from core.emitter import Emitter
 from core.procs import terminate_all
@@ -345,9 +345,12 @@ def main():
     # (core/audio.py), so this line cannot disagree with what they decode.
     try:
         streams = list_audio_streams(media_path)
+        chosen, why = choose_audio_stream(streams, language)
         if len(streams) > 1:
-            _, why = choose_audio_stream(streams, language)
             emitter.emit({"type": "status", "msg": f"Audio track: {why}"})
+        lead = audio_lead_note(streams, chosen)
+        if lead:
+            emitter.emit({"type": "status", "msg": f"Audio: {lead}"})
     except Exception as exc:              # a diagnostic must never break a run
         if debug:
             _log_debug(f"audio-track report failed: {exc}")

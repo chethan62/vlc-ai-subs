@@ -107,15 +107,42 @@ def list_audio_streams(media_path: str, timeout: float = PROBE_TIMEOUT) -> list[
         disposition = stream.get("disposition") or {}
         title = (tags.get("title") or "").strip()
         low = title.lower()
+        try:
+            lead = float(stream.get("start_time") or 0.0)
+        except (TypeError, ValueError):
+            lead = 0.0
         out.append({
             "index": int(stream.get("index") or 0),
             "language": (tags.get("language") or "").strip().lower(),
             "title": title,
             "channels": int(stream.get("channels") or 0),
+            # How far into the container this stream's first sample sits. Our decode
+            # starts the WAV at the first audio sample, so every timestamp we produce is
+            # on the *audio* timeline; a non-zero lead is why a file can look uniformly
+            # out of sync. Measured on a real film: 1.008s (24 frames at 23.976fps).
+            "start_time": lead if lead > 0 else 0.0,
             "non_dialogue": bool(disposition.get("visual_impaired") or disposition.get("comment"))
             or any(marker in low for marker in _NON_DIALOGUE_MARKERS),
         })
     return out
+
+
+def audio_lead_note(streams: list[dict], index: int | None) -> str | None:
+    """A sentence about a non-zero audio start offset, or None when there is none.
+
+    Reported, never "corrected": measured against the film's own professional subtitle
+    track, adding the lead back moved every cue from 0.53s early to 0.48s late — worse by
+    both metrics tried (cue-start matches fell 215 -> 131). The lead and the model's own
+    emission lag partly cancel, so the residual is smaller than either correction would
+    suggest. Knowing the number is still what makes a uniform sync complaint diagnosable.
+    """
+    for stream in streams:
+        if index is not None and stream["index"] != index:
+            continue
+        if stream.get("start_time", 0.0) >= 0.05:
+            return (f"audio starts {stream['start_time']:.3f}s after the video; "
+                    f"subtitles are timed to the audio stream")
+    return None
 
 
 def _label(streams: list[dict], stream: dict) -> str:
