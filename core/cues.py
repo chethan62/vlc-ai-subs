@@ -338,6 +338,76 @@ def split_long_cue(seg: dict, max_seconds: float = MAX_CUE_SECONDS,
     return out
 
 
+def borrow_for_short_cues(segments: list[dict], min_duration: float = MIN_DURATION,
+                          max_seconds: float = MAX_CUE_SECONDS,
+                          borrow_gap: float = 0.0) -> list[dict]:
+    """Give a too-short cue time so it stays readable, without moving any text.
+
+    Measured against the professional subtitle track on this project's test film: 19.3 % of
+    our cues ran under a second against 0.4 % of theirs (our median 0.72 s, their shortest
+    0.88 s), and 299 of those 365 had no free time on either side, so the per-cue pass cannot
+    lift them. Time comes, in this order, from:
+
+    1. the silence after the cue — its end moves later, but never past the next cue's start
+       (its speech is the next line's, and extending over it is what makes a subtitle appear
+       before the words are spoken);
+    2. the silence before the cue — its start moves earlier, touching no other cue;
+    3. the previous cue's own spare tail, only when the two abut, and only down to that cue's
+       own floor.
+
+    *borrow_gap* is 0, not MIN_GAP: the professional track's median gap between cues is 0.00 s,
+    so closing our 2-frame gap is free time that belongs to the cue that needs it. The gap is
+    still kept by the main pass, which is what keeps cues apart when nothing needs lifting.
+
+    A donor's end is never pushed later (a 1.84 s cue became 117.56 s that way, by handing over
+    the silence that followed it) and no cue is ever merged: a cue that cannot be helped is
+    left exactly as it was.
+    """
+    out = [dict(seg) for seg in segments]
+    for i, cue in enumerate(out):
+        deficit = min_duration - (cue["end"] - cue["start"])
+        if deficit <= 0.001:
+            continue
+
+        following = out[i + 1] if i + 1 < len(out) else None
+        previous = out[i - 1] if i else None
+
+        # 1. Free time after, stopping short of the next cue's speech.
+        if following is not None:
+            room = (following["start"] - borrow_gap) - cue["end"]
+            if room > 1e-9:
+                taken = min(deficit, room)
+                cue["end"] += taken
+                deficit -= taken
+
+        # 2. Free time before, which belongs to nobody.
+        if deficit > 0.001 and previous is not None:
+            room = (cue["start"] - previous["end"]) - borrow_gap
+            if room > 1e-9:
+                taken = min(deficit, room)
+                cue["start"] -= taken
+                deficit -= taken
+
+        # 3. The earlier cue's spare tail — abutting neighbours only, and it never goes under
+        # its own floor. Earlier first, so the next line still comes up with its own speech.
+        if deficit > 0.001 and previous is not None and cue["start"] - previous["end"] <= borrow_gap + 1e-9:
+            spare = (previous["end"] - previous["start"]) - min_duration
+            taken = min(deficit, max(0.0, spare), cue["start"] - previous["start"] - min_duration)
+            if taken > 1e-9:
+                cue["start"] -= taken
+                previous["end"] = cue["start"]
+
+        if cue["end"] - cue["start"] > max_seconds:
+            cue["end"] = cue["start"] + max_seconds
+        cue["start"] = round(cue["start"], 3)
+        cue["end"] = round(cue["end"], 3)
+        if previous is not None:
+            previous["end"] = round(previous["end"], 3)
+        if following is not None:
+            following["start"] = round(following["start"], 3)
+    return out
+
+
 def apply_quality(
     segments: list[dict],
     max_chars: int | None = None,
@@ -415,4 +485,7 @@ def apply_quality(
 
         seg["start"] = round(seg["start"], 3)
         seg["end"] = round(seg["end"], 3)
-    return out
+
+    # Last: lift the cues that are too brief to read. This moves boundaries only, and the
+    # per-cue pass above cannot do it (measured: 299 of 365 short cues are boxed in).
+    return borrow_for_short_cues(out)

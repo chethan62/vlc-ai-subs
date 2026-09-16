@@ -23,6 +23,8 @@ Every figure below is from that film's own output.
 import re
 
 from core.blocklist import deloop_text, filter_segments
+import pytest
+
 from core.cues import MAX_CUE_SECONDS, MAX_LINE_CHARS, apply_quality, wrap
 
 # The real cue: 100 characters, one comma-separated sentence with no terminator.
@@ -83,6 +85,83 @@ def test_the_min_visible_floor_never_crosses_the_next_cue():
     )
     for a, b in zip(out, out[1:]):
         assert a["end"] <= b["start"] + 1e-9, "an overlap is a rendering fault"
+
+
+def test_a_brief_cue_borrows_time_from_the_earlier_neighbour():
+    """The film's measured case: 19.3% of our cues ran under a second against 0.4% of the
+    professional track's, mostly boxed in on both sides with no free time anywhere."""
+    out = apply_quality([
+        {"start": 0.0, "end": 3.0, "text": "A full line of dialogue here."},
+        {"start": 3.0, "end": 3.6, "text": "Okay."},
+        {"start": 3.6, "end": 6.6, "text": "And another full line of dialogue."},
+    ], language="en")
+    short = out[1]
+    assert short["end"] - short["start"] >= 1.0, "the brief cue must reach a readable duration"
+    assert out[0]["end"] == pytest.approx(short["start"]), "the earlier cue gave up its tail"
+    assert out[0]["end"] - out[0]["start"] >= 1.0, "a donor never drops below the floor"
+    assert [c["text"] for c in out] == ["A full line of dialogue here.", "Okay.",
+                                        "And another full line of dialogue."]
+
+
+def test_borrowing_moves_boundaries_only():
+    """No cue is merged or dropped and no text moves — only a boundary shifts."""
+    before = [{"start": 0.0, "end": 4.0, "text": "One line of text."},
+              {"start": 4.0, "end": 4.5, "text": "Yes."}]
+    out = apply_quality([dict(c) for c in before], language="en")
+    assert len(out) == len(before)
+    assert [c["text"] for c in out] == [c["text"] for c in before]
+
+
+def test_a_brief_cue_with_no_help_available_is_left_alone():
+    """Both neighbours are already at the floor, so there is nothing to borrow.
+
+    The main pass still moves this cue's own end (its ceiling is 1.4 - MIN_GAP); what must not
+    happen is either *neighbour* being touched on its behalf.
+    """
+    given = [
+        {"start": 0.0, "end": 1.0, "text": "One line."},
+        {"start": 1.0, "end": 1.4, "text": "Mm."},
+        {"start": 1.4, "end": 2.4, "text": "Two line."},
+    ]
+    out = apply_quality([dict(c) for c in given], language="en")
+    assert out[1]["end"] - out[1]["start"] < 1.0, "still too brief: nothing to take"
+    assert out[0]["end"] == given[0]["end"], "the earlier cue was not shortened"
+    assert out[2]["start"] == given[2]["start"], "the later cue was not delayed"
+
+
+def test_the_first_cue_takes_the_silence_after_it():
+    """A first cue has no earlier neighbour, so its free time is the gap before the next."""
+    out = apply_quality([
+        {"start": 0.0, "end": 0.4, "text": "Hi."},
+        {"start": 1.5, "end": 5.5, "text": "A much longer line of dialogue."},
+    ], language="en")
+    assert out[0]["end"] - out[0]["start"] >= 1.0
+    assert out[0]["end"] <= out[1]["start"] + 1e-9, "never into the next cue's speech"
+    assert out[1]["end"] - out[1]["start"] >= 1.0
+
+
+def test_borrowing_never_lengthens_the_cue_it_takes_from():
+    """The rule this exists for: the film's cue #1005 was 1.84s, its next cue 116s later, and
+    handing over that "tail" stretched the donor to 117.56s. A donor's end may only move
+    earlier, never later."""
+    out = apply_quality([
+        {"start": 0.0, "end": 2.0, "text": "A spoken line here."},
+        {"start": 118.0, "end": 118.6, "text": "Okay."},
+        {"start": 118.6, "end": 121.0, "text": "More dialogue follows."},
+    ], language="en")
+    assert out[0]["end"] == pytest.approx(2.0), "the earlier cue must not be stretched"
+    assert out[1]["end"] - out[1]["start"] >= 1.0, "the brief cue is lifted from the silence before"
+    assert out[1]["start"] < 118.0, "and it moves into nobody's speech"
+    assert out[0]["end"] <= out[1]["start"] + 1e-9, "no overlap"
+
+
+def test_borrowed_time_never_exceeds_the_display_maximum():
+    out = apply_quality([
+        {"start": 0.0, "end": 0.1, "text": "Mm."},
+        {"start": 0.1, "end": 20.0, "text": "A line that will be clamped anyway."},
+    ], language="en")
+    for cue in out:
+        assert cue["end"] - cue["start"] <= MAX_CUE_SECONDS + 1e-9
 
 
 def test_the_filter_preserves_the_line_breaks_it_is_given():

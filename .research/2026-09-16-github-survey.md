@@ -192,7 +192,6 @@ not disable the VAD, because a non-existent path falls through to the standard l
 to have made every A/B run against it a lie.
 
 ### What remains a model property, not a bug
-
 With the gate fixed, the film's opening still yields 4 cues where the reference has 9. Three
 of the differences are not ours to fix:
 
@@ -203,3 +202,33 @@ of the differences are not ours to fix:
   and whisper.cpp both merge or drop them in a loud, music-heavy mix.
 - This is a **recall** property of the models on this material, documented rather than
   papered over: nothing in the plugin removes words that were transcribed.
+
+## Addendum 3 — the gate did remove words, on real media, and is now opt-in
+
+Addendum 2 fixed the gate's threshold and left it on. One full end-to-end run later, the
+honest answer is that the gate is not safe at all.
+
+Two runs of the same 145-minute film, with the gate on and off, compared by diffing the word
+lists:
+
+| | gate on | gate off |
+| --- | --- | --- |
+| cues | 1877 | (see the run after the change) |
+| **words** | **10046** | 10143 |
+| dialogue deleted | **97 words, in 3 regions** | none |
+
+The skipped chunks with speech, located by matching the missing passage back to the previous
+run's timestamps: **56.2 s**, **20.2 s** and **19.3 s** — the last containing *"I would, but
+first of all, let me say, I must apologize…"*. The gate had skipped 45 chunks overall, so
+roughly **7 % of the chunks it called speechless held speech**.
+
+The lesson is about where the evidence came from: the gate was justified by a 60 s credits
+clip (2 of 2 chunks skipped, 3 s instead of 10 s). Short-clip evidence cannot show you a
+detector's false-negative rate, and this is exactly why the rule "a missing line is invisible,
+a hallucinated one is visible and blocklistable" was already written into the README *before*
+the gate was added — and then contradicted by it.
+
+So `VSCL_AISUBS_VAD_GATE=1` now opts in; the default is off. The VAD is still measured and
+reported, and still never allowed to remove a word that was transcribed. The saving it buys is
+a few seconds of compute on non-speech chunks; the cost of a false negative is dialogue the
+viewer never sees and the log never mentions.

@@ -53,6 +53,24 @@ VAD_THRESHOLD = 0.4
 _DISABLED = frozenset({"none", "off", "0", "no", "disabled", "false"})
 
 
+def vad_gate_enabled() -> bool:
+    """Whether the VAD may SKIP chunks. Off by default — measured on a full film, it deleted
+    dialogue.
+
+    v1.4.0 skipped chunks the VAD called speechless, on the strength of a 60 s credits clip
+    (2 of 2 chunks skipped, 3 s instead of 10 s). On the 145-minute test film it skipped 45
+    chunks, three of which held real speech, silently deleting 97 words across 56.2 s, 20.2 s
+    and 19.3 s — the last including "I would, but first of all, let me say, I must apologize".
+    A detector's false negative here is invisible in the output; the saving is a few seconds
+    on non-speech chunks. So the gate is opt-in: VSCL_AISUBS_VAD_GATE=1.
+
+    The VAD itself is still used for what it was measured to be good at — reporting where the
+    speech is — never to remove a word that was transcribed.
+    """
+    return os.environ.get("VSCL_AISUBS_VAD_GATE", "").strip().lower() not in (
+        "", "0", "off", "no", "false", "disabled")
+
+
 def resolve_vad_model() -> str | None:
     """Path to silero_vad.onnx, or None when it is not installed or switched off.
 

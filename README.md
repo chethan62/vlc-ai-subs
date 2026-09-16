@@ -18,7 +18,7 @@ or real-time on-screen captions.
 | **Two modes** | Generate & Load SRT (default), or Real-time OSD — cues appear on the OSD when playback reaches them |
 | **Right audio track** | Multi-audio releases (DUAL/MULTi) are common and ffmpeg's default is the *first* track — the dub. The plugin picks the one matching your language, skips audio-description/commentary tracks, and says which it used |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
-| **Readable cues** | Text wrapped to the *language's* line width from the Netflix timed-text guides (42 chars Latin, 16 Chinese/Korean, 13 Japanese, ≤2 lines); cues over 7 s split at sentence boundaries (cut into equal runs for unpunctuated CJK); a cue whose text needs longer than 20 CPS *(9 Chinese, 4 Japanese, 12 Korean, 17 most other languages)* is given more time up to the next cue — never fewer words; min-duration and gap cleanup |
+| **Readable cues** | Text wrapped to the *language's* line width from the Netflix timed-text guides (42 chars Latin, 16 Chinese/Korean, 13 Japanese, ≤2 lines); cues over 7 s split at sentence boundaries (cut into equal runs for unpunctuated CJK); a cue whose text needs longer than 20 CPS *(9 Chinese, 4 Japanese, 12 Korean, 17 most other languages)* is given more time up to the next cue — never fewer words; a cue too brief to read takes time from the silence around it and from an abutting neighbour's spare tail — never from the next cue's speech; min-duration and gap cleanup |
 | **Cancel + memory** | Cancel a running transcription — it stops the backend child and its ffmpeg decode, and removes the partial decoded audio (an 87 MB file, measured); a run killed outright leaves it for the next run's sweep; the dialog remembers engine/model/language/task/mode |
 | **Any language** | Auto-detection or specify a language code (`en`, `es`, `fr`, `hi`, `ja`, `zh`…) |
 | **Translation** | Translate any language to English subtitles |
@@ -79,19 +79,26 @@ of Parakeet on CPU, 2.7 GB peak):
 | overlapping cues | 1 | **0** |
 | cues | 1841 | 1891 (the necessary splits) |
 | words | 10143 | **10143, same order** |
+| cues under 1 s | 365 (19.3 %) | **157 (8.3 %)** — professional track: 0.4 % |
+| shortest cue | 0.08 s | **0.16 s** — professional track: 0.88 s |
 
-The one standard the plugin cannot yet meet is reading speed: 453 cues (24.0 %) of
-that film carry more text than 20 CPS allows in the span the engine gave them, the
-worst needing 62 CPS. (The grouping fix above took that from 505 cues / 27.3 %: cue
-spans used to end where a word's own timestamp sat, which was its *start*, so every
-span was short.) This is a timing limitation, not a text-handling one — and the honest
-version of the evidence is narrower than it first looked. A few cues imply physically
-impossible speech (450–580 wpm, i.e. 8–10 words per second) and those are real
-timestamp defects; but most of the apparent excess is the *metric*: a cue's span runs to
-the last word's start, not the end of its audio, so three-word cues lose about a third
-of their span and short function-word lines read far faster than they are. Speech itself
-is 120–160 wpm. The time exists — the film averages ~6 CPS — the words are simply
-reported closer together than they were spoken.
+**The reading-speed figure is not a defect: a professional track breaches it just as often.**
+That film carries its own professional English subtitle track (1988 cues), and measured the
+same way ours is 24.0 % of cues over 20 CPS against its **23.7 %**, with matching percentiles
+(median 14.67 vs 14.40, p90 25.00 vs 24.96, p99 37.50 vs 37.12). The 20 CPS figure is a target
+professional subtitlers exceed at the same rate we do, not a ceiling a good track meets — so
+the earlier treatment of this as a known quality gap was wrong, and nothing is reshuffled for
+it. (It also explains why the dense-run rebalancing that was built and deleted during the
+cue-standards round could not have helped: there was nothing to fix.)
+
+**Cue duration is the standard the plugin did fail, and no longer does.** 19.3 % of that
+film's cues ran under a second against the professional track's 0.4 % (whose shortest cue is
+0.88 s). 299 of those 365 were boxed in by abutting neighbours on both sides, so the per-cue
+pass could not lift them: brief cues now take time from the silence around them — never from
+the next cue's speech, which would show a line before the words are spoken — and from an
+abutting earlier cue's spare tail, never dropping that cue below its own floor. Replaying the
+film's own cues: 19.3 % → **8.3 %**, no cue over 7 s, no overlaps, **no text changed**, the
+10143-word sequence identical. See `.research/2026-09-16-professional-track-qc.md`.
 
 **WhisperX does not fix this, and the earlier claim that it did has been withdrawn.**
 Measured on the same 60 s minute: Parakeet median 217 wpm / max 500, WhisperX (aligned)
@@ -381,16 +388,20 @@ back to CPU when no device is present.
 - Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
   checks for it up front and aborts with a clear message otherwise (the
   runner also errors cleanly if ffmpeg is missing at runtime).
-- Chunks holding no speech are **skipped**, via Silero VAD (`install-vad-model.sh`,
-  optional, ~630 KB). Measured on a 60 s music/credits clip: 2 of 2 chunks skipped, 3 s
-  instead of 10 s, and no text invented. The VAD is only ever asked *where the speech is* —
-  it never removes a transcribed word, because whisper.cpp's own `--vad` was measured
-  dropping real dialogue and a missing line is invisible. Set `VSCL_AISUBS_VAD_MODEL=none`
-  to switch it off entirely.
-- The VAD's detection threshold is **0.4, not the library default 0.5** — measured, because
-  0.5 was silently costing dialogue. On the test film's opening, 0.5 scored the chunk holding
-  the 47–53 s shouts as speechless and the gate skipped it; at 0.4 that chunk is decoded
-  again (the opening went from 3 cues to 4) while every music-only chunk is still skipped.
+- **Chunk skipping on the VAD is off by default** — `VSCL_AISUBS_VAD_GATE=1` opts in. It
+  shipped on in v1.4.0 on the strength of a 60 s credits clip (2 of 2 chunks skipped, 3 s
+  instead of 10 s), and the cost only appeared on a full film: it skipped 45 chunks, **three of
+  them holding real speech**, silently deleting **97 words** of dialogue — 56.2 s, 20.2 s and
+  19.3 s of it, the last including *"I would, but first of all, let me say, I must apologize"*.
+  A lost line is invisible in the output; what the gate buys is a few seconds on non-speech
+  chunks. The VAD is still measured and reported, and it is never allowed to remove a
+  transcribed word — the rule this README stated *before* the gate existed, which the gate
+  contradicted.
+- The VAD model (~630 KB) is optional (`install-vad-model.sh`). Its detection threshold is
+  **0.4, not the library default 0.5** — measured: on the film's opening, 0.5 scored the chunk
+  holding the 47–53 s shouts as speechless and skipped it, where 0.4 decodes it (3 cues → 4)
+  while every music-only chunk is still skipped. `VSCL_AISUBS_VAD_MODEL=none` disables the VAD
+  outright.
 - Long media is decoded in 30 s chunks (`CHUNK_SECONDS` in
   `parakeet_runner.py`; override with `VSCL_AISUBS_PARAKEET_CHUNK`). Chunk
   length is bounded by two *measured* limits of the int8 ONNX conversion, not by
@@ -422,7 +433,8 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `auto` | `auto` | backend selection |
 | `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` | auto | WhisperX (runner); `cpu` = `-ng` for whisper.cpp |
 | `VSCL_AISUBS_PARAKEET_CHUNK` | seconds (5–600) | 30 | Parakeet chunk length — smaller = less RAM, larger = fewer seams |
-| `VSCL_AISUBS_VAD_MODEL` | path, or `none`/`off`/`0`/`no` to disable | `~/.local/share/sherpa-onnx/models/` | where the VAD model lives; absent or disabled = no chunk skipping |
+| `VSCL_AISUBS_VAD_MODEL` | path, or `none`/`off`/`0`/`no` to disable | `~/.local/share/sherpa-onnx/models/` | where the VAD model lives; absent or disabled = no VAD |
+| `VSCL_AISUBS_VAD_GATE` | `1`/`on` to enable | off | lets the VAD *skip* chunks it calls speechless — off by default because on a full film it deleted 97 words of real dialogue |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
@@ -555,7 +567,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 261 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 268 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

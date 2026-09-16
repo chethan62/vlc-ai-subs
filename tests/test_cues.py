@@ -103,14 +103,19 @@ def test_short_cue_is_extended_to_min_duration():
 
 
 def test_extended_cue_never_overruns_the_next_cue():
+    """A cue may be given time to be readable, but never the next cue's own speech.
+
+    It may close the 2-frame gap when that is what it takes: the professional track on the test
+    film abuts its cues (median gap 0.00 s), so a readable duration wins over the gap. The main
+    pass still keeps MIN_GAP whenever nothing needs lifting.
+    """
     out = apply_quality([
         {"start": 0.0, "end": 0.2, "text": "one"},
         {"start": 0.9, "end": 2.5, "text": "two"},
     ])
-    # Extended to the minimum duration, but stopping one MIN_GAP short of the
-    # next cue (0.9 - 0.08) so the two do not sit back to back.
-    assert out[0]["end"] == pytest.approx(0.82)
-    assert out[0]["end"] < out[1]["start"]
+    assert out[0]["end"] == pytest.approx(0.9), "took the gap, stopped at the next cue's speech"
+    assert out[1]["start"] == pytest.approx(0.9), "the next cue is not delayed or covered"
+    assert out[0]["end"] <= out[1]["start"], "no overlap"
 
 
 def test_back_to_back_cues_get_a_gap():

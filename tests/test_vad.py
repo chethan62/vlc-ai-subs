@@ -10,7 +10,7 @@ the one failure mode this design must not have.
 
 import pytest
 
-from core.vad import holds_speech, resolve_vad_model, speech_extent
+from core.vad import holds_speech, resolve_vad_model, speech_extent, vad_gate_enabled
 
 
 def test_holds_speech_detects_overlap_not_containment():
@@ -63,6 +63,23 @@ def test_the_vad_can_be_switched_off(monkeypatch):
     for value in ("none", "off", "0", "no", "disabled", "FALSE"):
         monkeypatch.setenv("VSCL_AISUBS_VAD_MODEL", value)
         assert resolve_vad_model() is None, f"{value!r} must disable the VAD"
+
+
+def test_the_gate_is_off_unless_it_is_asked_for(monkeypatch):
+    """Skipping chunks is opt-in, and this test is the reason.
+
+    Measured on the full 145-minute film: the gate skipped 45 chunks, three of them holding
+    real speech, and silently deleted 97 words of dialogue. A false negative from the detector
+    is invisible in the output, while the thing it buys is a few seconds on non-speech chunks.
+    """
+    monkeypatch.delenv("VSCL_AISUBS_VAD_GATE", raising=False)
+    assert vad_gate_enabled() is False, "default must be off"
+    for value in ("0", "off", "no", "false", "disabled", ""):
+        monkeypatch.setenv("VSCL_AISUBS_VAD_GATE", value)
+        assert vad_gate_enabled() is False, value
+    for value in ("1", "on", "yes", "true", "TRUE"):
+        monkeypatch.setenv("VSCL_AISUBS_VAD_GATE", value)
+        assert vad_gate_enabled() is True, value
 
 
 def test_a_missing_model_is_not_an_error(monkeypatch):
