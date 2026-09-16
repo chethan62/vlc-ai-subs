@@ -15,7 +15,7 @@ or real-time on-screen captions.
 | **Three engines** | WhisperX (multilingual, word-aligned), Parakeet (English + 25 European languages, ~10× faster) or whisper.cpp (Vulkan) |
 | **Auto engine** | Auto (default) picks the fastest engine that covers the language (Parakeet v2/v3), else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) / CPU |
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
-| **Two modes** | Generate & Load SRT (default) or OSD captions (Real-time OSD — each cue is pushed to the OSD as it is produced) |
+| **Two modes** | Generate & Load SRT (default), or Real-time OSD — cues appear on the OSD when playback reaches them |
 | **Right audio track** | Multi-audio releases (DUAL/MULTi) are common and ffmpeg's default is the *first* track — the dub. The plugin picks the one matching your language, skips audio-description/commentary tracks, and says which it used |
 | **SRT output** | Standard `.srt` files written next to your video — compatible with Kdenlive, VLC, mpv, PotPlayer |
 | **Readable cues** | Text wrapped to the *language's* line width from the Netflix timed-text guides (42 chars Latin, 16 Chinese/Korean, 13 Japanese, ≤2 lines); cues over 7 s split at sentence boundaries (cut into equal runs for unpunctuated CJK); a cue whose text needs longer than 20 CPS *(9 Chinese, 4 Japanese, 12 Korean, 17 most other languages)* is given more time up to the next cue — never fewer words; min-duration and gap cleanup |
@@ -86,6 +86,25 @@ language). The same file now yields actual dialogue:
 Did you know that?
 I did not.
 ```
+
+## Real-time OSD
+
+OSD mode used to push each cue the moment the transcription produced it. Nothing
+paces transcription to the video — Parakeet runs ~10× faster than real time and
+WhisperX slower than it — so the captions sat minutes away from the picture
+(measured in a real VLC run: the dialog's "current cue" ran far ahead of the
+video). Cues now queue and appear when playback reaches their start, up to one poll
+(1 s) early. A cue the video has already passed still shows — late beats never — for
+at least 1.5 s, and cues passed over are dropped rather than replayed.
+
+The position comes from the input's `time` variable: microseconds, the same unit
+`vlc.osd.message` takes, checked against VLC 3.0.23's `src/input/var.c` and
+`modules/lua/libs/osd.c`.
+
+Honest gap: the scheduling is covered by the poll harness (37 checks, both Lua
+versions) and the API and units against VLC's own source, but no on-screen OSD
+rendering has been *observed* in a real VLC run on this machine — its Qt menu
+popups are not reachable by the automation available here.
 
 ## Cancelling a run
 

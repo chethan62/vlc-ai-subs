@@ -99,14 +99,20 @@ local _poll_tmr      = nil
 local _poll_secs     = 0
 local _poll_duration = 0
 local _poll_est_total = 30
--- 'sub' events already pushed to the OSD (real-time mode) — cues are shown
--- once, as they are produced, never replayed at the end.
+-- 'sub' events already examined (real-time mode) — each cue is pushed once and
+-- never replayed at the end.
 local _poll_shown    = 0
+-- Cues produced but not yet on screen: they wait for playback to reach them (see
+-- flush_osd_queue), because the transcription is not paced by the video.
+local _osd_queue     = {}
 -- Latest status/transcript lines seen in the mirror file (dialog details pane)
 local _poll_status   = nil
 local _poll_cue      = nil
 local _poll_cues     = 0
 local POLL_US     = 1000000  -- poll every 1 second (was 3s)
+-- A cue may be shown up to one poll early: at a 1 s cadence that is what keeps a
+-- caption from appearing a full second after its line was spoken.
+local OSD_LEAD_US = POLL_US
 
 -- Seed the temp-name RNG once at load — predictable /tmp names are a
 -- symlink-attack vector (see get_temp_file).
@@ -423,18 +429,62 @@ function show_osd(text, duration)
     end
 end
 
--- Push one transcribed cue to the OSD as soon as it is produced.
--- Duration follows the cue length (min 1.5 s; 3 s when there is no usable
--- timing) — VLC replaces the message on the channel, so the newest cue is
--- what stays on screen while generation continues. Cues carry SRT line
--- breaks; the OSD wants a single line.
-function show_cue_osd(d)
+-- Push one transcribed cue to the OSD.
+--
+-- *now* is the playback position the cue is being shown at, so a cue that is
+-- already partly past keeps only the time it has left (never under 1.5 s). VLC
+-- replaces the message on the channel, so the newest cue is what stays on screen.
+function show_cue_osd(d, now)
     local dur = 3000000
     if d.start and d["end"] then
-        dur = math.max((d["end"] - d.start) * 1000000, 1500000)
+        local from = math.max(d.start, now or d.start)
+        dur = math.max((d["end"] - from) * 1000000, 1500000)
     end
     osd_channel = osd_channel or register_osd()
     show_osd(string.gsub(d.text or "", "%s+", " "), dur)
+end
+
+-- Playback position in seconds, or nil when nothing is playing. VLC keeps it in
+-- the input's "time" variable — an INTEGER of microseconds, verified in
+-- src/input/var.c at 3.0.23 — which is also the unit vlc.osd.message wants.
+function playback_seconds()
+    local ok, us = pcall(function()
+        return vlc.var.get(vlc.object.input(), "time")
+    end)
+    if ok and type(us) == "number" and us >= 0 then return us / 1000000 end
+    return nil
+end
+
+-- Show the cue the video has actually reached.
+--
+-- Nothing paces the transcription to the video: Parakeet runs ~10x faster than
+-- real time and WhisperX slower than it, so pushing each cue the moment it is
+-- produced put captions minutes away from the picture (measured in a real VLC
+-- run: the dialog's "current cue" ran far ahead of the video). Cues are queued as
+-- they arrive and pushed only once playback passes their start — the newest one,
+-- since VLC replaces the channel message; cues the video has already passed are
+-- dropped rather than replayed. With nothing playing, the oldest queued cue is
+-- shown, so a run without playback still advances on screen.
+function flush_osd_queue()
+    if #_osd_queue == 0 then return end
+    local now = playback_seconds()
+    local index = 0
+    if now == nil then
+        index = 1
+    else
+        local lead = OSD_LEAD_US / 1000000
+        for i = 1, #_osd_queue do
+            if (_osd_queue[i].start or 0) <= now + lead then index = i end
+        end
+        if index == 0 then return end   -- playback has not reached any of them yet
+    end
+    local cue = _osd_queue[index]
+    for _ = 1, index do table.remove(_osd_queue, 1) end
+    -- Info level: only visible with VLC verbosity on, and it is how a real run
+    -- proved the position is microseconds (a wrong unit would show here).
+    vlc.msg.info(string.format("[aisubs] cue %s at playback %s",
+        cue.start or "?", now and string.format("%.1fs", now) or "n/a"))
+    show_cue_osd(cue, now)
 end
 
 ----------------------------------------------------------------
@@ -599,6 +649,7 @@ function cancel_run()
     pcall(function() os.remove(string.gsub(tmp, "%.txt$", ".srt")) end)
     pcall(function() os.remove(pid_file_for(tmp)) end)
     _poll_tmp, _poll_cue, _poll_status, _poll_cues = nil, nil, nil, 0
+    _osd_queue = {}
     if progress_bar then progress_bar:set_value(0) end
     if cue_label then cue_label:set_text("") end
     if details_label then details_label:set_text("") end
@@ -827,6 +878,7 @@ function start_generation()
     _poll_engine = engine_label(engine)
     _poll_secs   = 0
     _poll_shown  = 0
+    _osd_queue   = {}
     _poll_status = nil
     _poll_cue    = nil
     _poll_cues   = 0
@@ -899,7 +951,8 @@ function poll_progress()
                 seen = seen + 1
                 _poll_cue = ev.text
                 if _poll_mode == "realtime" and seen > _poll_shown then
-                    show_cue_osd(ev)
+                    -- Queue it: playback decides when it appears (flush below).
+                    _osd_queue[#_osd_queue + 1] = ev
                 end
             elseif ev and ev.type == "status" then
                 -- The CLI's own phase lines ("Backend: …", "Transcribing…")
@@ -910,6 +963,7 @@ function poll_progress()
     f:close()
     if seen > _poll_shown then _poll_shown = seen end
     if seen > _poll_cues then _poll_cues = seen end
+    if _poll_mode == "realtime" then flush_osd_queue() end
 
     if not last_line or last_line == "init" then
         -- Python hasn't written output yet
