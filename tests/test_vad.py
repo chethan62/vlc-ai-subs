@@ -10,7 +10,8 @@ the one failure mode this design must not have.
 
 import pytest
 
-from core.vad import holds_speech, resolve_vad_model, speech_extent, vad_gate_enabled
+from core.vad import (holds_speech, resolve_vad_model, speech_extent, uncovered_speech,
+                      vad_gate_enabled)
 
 
 def test_holds_speech_detects_overlap_not_containment():
@@ -80,6 +81,39 @@ def test_the_gate_is_off_unless_it_is_asked_for(monkeypatch):
     for value in ("1", "on", "yes", "true", "TRUE"):
         monkeypatch.setenv("VSCL_AISUBS_VAD_GATE", value)
         assert vad_gate_enabled() is True, value
+
+
+def test_uncovered_speech_finds_a_span_no_word_covers():
+    """The measured case: the model skipped ~7s mid-chunk and the SRT showed nothing."""
+    spans = [(0.0, 5.0)]
+    words = [("hello", 0.0, 1.0), ("world", 1.0, 2.0), ("again", 4.5, 5.0)]
+    assert uncovered_speech(spans, words, 0.0, 5.0) == [(2.0, 4.5)]
+
+
+def test_covered_speech_reports_nothing():
+    assert uncovered_speech([(0.0, 3.0)], [("a", 0.0, 3.0)], 0.0, 3.0) == []
+
+
+def test_uncovered_speech_ignores_blips_and_short_holes():
+    spans = [(0.0, 5.0), (10.0, 10.4)]
+    words = [("a", 0.0, 4.6)]
+    assert uncovered_speech(spans, words, 0.0, 20.0, min_seconds=1.0) == []
+
+
+def test_uncovered_speech_respects_the_window():
+    assert uncovered_speech([(0.0, 10.0)], [], 4.0, 6.0) == [(4.0, 6.0)]
+
+
+def test_uncovered_speech_with_no_spans_or_no_words():
+    assert uncovered_speech([], [("a", 0.0, 1.0)], 0.0, 10.0) == []
+    assert uncovered_speech([(0.0, 2.0)], [], 0.0, 10.0) == [(0.0, 2.0)]
+
+
+def test_merge_close_spans_joins_nearby_holes():
+    """Measured: four adjacent 1-3s holes re-decoded separately came out garbled."""
+    from parakeet_runner import merge_close_spans
+    assert merge_close_spans([(0.0, 1.0), (1.5, 2.0), (9.0, 10.0)]) == [(0.0, 2.0), (9.0, 10.0)]
+    assert merge_close_spans([]) == []
 
 
 def test_a_missing_model_is_not_an_error(monkeypatch):

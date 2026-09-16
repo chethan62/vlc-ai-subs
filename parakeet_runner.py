@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING
 
 from core.audio import SAMPLE_RATE, choose_audio_stream, cleanup_temp, decode_to_wav16k, list_audio_streams
 from core.cues import apply_quality
-from core.vad import holds_speech, resolve_vad_model, speech_extent, speech_spans, vad_gate_enabled
+from core.vad import (holds_speech, resolve_vad_model, speech_extent, speech_spans,
+                      uncovered_speech, vad_gate_enabled)
 from core.procs import install_termination_handler
 from core.srt import write_srt
 
@@ -221,6 +222,22 @@ def chunk_plan(n_samples: int, chunk_samples: int) -> list:
     ]
 
 
+def merge_close_spans(spans: list, max_gap: float = 2.0) -> list:
+    """Join holes separated by less than *max_gap* so each is re-decoded with context.
+
+    Measured: re-decoding four adjacent 1-3 s holes separately produced garbled fragments
+    ("No No under understanding of your purpose") because a 1 s clip carries no context. As one
+    7.7 s decode of the same speech, the model produces it correctly.
+    """
+    merged = []
+    for a, b in sorted(spans):
+        if merged and a - merged[-1][1] < max_gap:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
 def shift_words(words: list, dt: float) -> list:
     """Offset (text, start, end) words by dt seconds (chunk time alignment)."""
     return [(w[0], w[1] + dt, w[2] + dt) for w in words]
@@ -295,25 +312,28 @@ def main():
     # one giant stream — a full film used to take the machine down.
     ranges = chunk_plan(len(samples), resolve_chunk_seconds() * SAMPLE_RATE)
     overlap = int(CHUNK_OVERLAP_SECONDS * SAMPLE_RATE)
-    # The VAD's spans are NOT used to re-time words: measured on this project's film,
-    # narrowing word boundaries against them changed nothing in the output (identical cues,
-    # words, spans and CPS), because the transducer already places words inside speech — its
-    # timestamps are compressed, not misplaced. Skipping chunks is OFF by default and opt-in
-    # via VSCL_AISUBS_VAD_GATE=1: measured on the full film it skipped 45 chunks, 3 of them
-    # holding real speech, and silently deleted 97 words of dialogue. See core/vad.py.
+    # The VAD is asked where the speech is, for two purposes:
+    #   (a) optional chunk skipping — OPT-IN and off by default; see core/vad.py for the run
+    #       where it silently deleted 97 words of dialogue;
+    #   (b) verification — ALWAYS on. Wherever the detector says speech is and the decoder
+    #       produced no word, that span is decoded again on its own. Measured on the film with
+    #       30 s chunks: the model skipped ~7 s of dialogue inside one chunk (three sentences)
+    #       that the identical audio transcribed at a 31 s, 45 s or single-chunk boundary.
+    # (b) can only ever ADD words, which is why it is safe to leave on.
     speech = None
-    if vad_gate_enabled():
-        vad_model = resolve_vad_model()
-        if vad_model:
-            try:
-                speech = speech_spans(samples, vad_model, SAMPLE_RATE)
-            except Exception as exc:  # noqa: BLE001 — never let the VAD stop a transcription
-                emit({"type": "status", "msg": f"Parakeet: VAD unavailable ({exc}) — continuing without it"})
+    vad_model = resolve_vad_model()
+    if vad_model:
+        try:
+            speech = speech_spans(samples, vad_model, SAMPLE_RATE)
+        except Exception as exc:  # noqa: BLE001 — never let the VAD stop a transcription
+            emit({"type": "status", "msg": f"Parakeet: VAD unavailable ({exc}) — continuing without it"})
     words = []
     n_chunks = len(ranges)
     skipped = 0
+    recovered = 0
     for ci, (start, stop) in enumerate(ranges, 1):
-        if speech is not None and not holds_speech(speech, start / SAMPLE_RATE, stop / SAMPLE_RATE):
+        if (vad_gate_enabled() and speech is not None
+                and not holds_speech(speech, start / SAMPLE_RATE, stop / SAMPLE_RATE)):
             skipped += 1
             continue
         if n_chunks > 1:
@@ -330,7 +350,54 @@ def main():
             # final timestamps can sit a hair past the audio length (padding),
             # and there is no following chunk to hand those words to.
             stop_s = stop / SAMPLE_RATE if ci < n_chunks else float("inf")
-            words.extend(keep_nominal_window(chunk_words, start / SAMPLE_RATE, stop_s))
+            kept = keep_nominal_window(chunk_words, start / SAMPLE_RATE, stop_s)
+            words.extend(kept)
+
+            # Verification: decode anything the detector calls speech that this chunk left
+            # untranscribed. Additive — a word that was decoded is never removed here.
+            if speech is not None:
+                window_end = (len(samples) / SAMPLE_RATE) if stop_s == float("inf") else stop_s
+                holes = uncovered_speech(speech, kept, start / SAMPLE_RATE, window_end)
+                for hole_a, hole_b in merge_close_spans(holes):
+                    pad = 0.5
+                    s0, s1 = max(0.0, hole_a - pad), min(len(samples) / SAMPLE_RATE, hole_b + pad)
+                    again = rec.create_stream()
+                    again.accept_waveform(SAMPLE_RATE, samples[int(s0 * SAMPLE_RATE):int(s1 * SAMPLE_RATE)])
+                    rec.decode_stream(again)
+                    res = again.result
+                    decoded = shift_words(tokens_to_words(res.tokens or [], res.timestamps or []), s0)
+                    # Keep only what starts inside the hole: the decode is padded for context,
+                    # so its first and last words belong to speech the chunk already has. The
+                    # small lead-in margin keeps a word the hole boundary clipped in half
+                    # (measured: "You have the gift" lost its "You" that way).
+                    extra = [w for w in decoded if hole_a - 0.35 <= w[1] < hole_b]
+                    if extra:
+                        words.extend(extra)
+                        recovered += len(extra)
+                        if _debug_enabled():
+                            emit({"type": "status", "msg": (
+                                f"Parakeet: recovered {len(extra)} word(s) at {hole_a:.2f}-{hole_b:.2f}s "
+                                f"(the chunk pass left them untranscribed): "
+                                f"{' '.join(w[0] for w in extra)[:90]!r}")})
+
+            if _debug_enabled():
+                # Per-chunk word accounting: the only way to tell a chunk that decoded
+                # nothing from one whose words were all dropped by the window rule. Both
+                # look identical in the finished SRT.
+                window = f"[{start / SAMPLE_RATE:.1f},{stop_s:.1f})"
+                dropped = [w for w in chunk_words if w not in kept]
+                if dropped:
+                    emit({"type": "status", "msg": (
+                        f"Parakeet: chunk {ci}/{n_chunks} {window} dropped {len(dropped)} word(s) outside "
+                        f"the window: " + "; ".join(f"{w[0]!r}@{w[1]:.2f}" for w in dropped[:6]))})
+                if kept:
+                    emit({"type": "status", "msg": (
+                        f"Parakeet: chunk {ci}/{n_chunks} {window} kept {len(kept)}/{len(chunk_words)} words, "
+                        f"{kept[0][1]:.2f}->{kept[-1][2]:.2f}s: {kept[0][0]!r} … {kept[-1][0]!r}")})
+                else:
+                    emit({"type": "status", "msg": (
+                        f"Parakeet: chunk {ci}/{n_chunks} {window} kept 0/{len(chunk_words)} words "
+                        f"(decoded {len(chunk_words)})")})
 
     # The VAD's spans are used to skip chunks only when explicitly opted in (see core/vad.py
     # for why that is off by default), and never to re-time words: measured on this project's
@@ -339,6 +406,12 @@ def main():
     # its timestamps are compressed, not misplaced.
     if skipped and speech is not None:
         emit({"type": "status", "msg": f"Parakeet: skipped {skipped} chunk(s) with no speech"})
+    if recovered:
+        emit({"type": "status", "msg": (
+            f"Parakeet: recovered {recovered} word(s) the decoder had skipped inside chunks")})
+    # Sort before grouping: recovered spans are appended after their chunk's words, and a
+    # globally ordered list is what words_to_segments assumes when it measures spans and gaps.
+    words.sort(key=lambda w: w[1])
     if _debug_enabled() and words:
         extent = speech_extent(words)
         span = max(0.001, words[-1][2] - words[0][1])

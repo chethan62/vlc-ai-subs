@@ -53,6 +53,46 @@ VAD_THRESHOLD = 0.4
 _DISABLED = frozenset({"none", "off", "0", "no", "disabled", "false"})
 
 
+def uncovered_speech(spans: list, words: list, start_s: float, stop_s: float,
+                     min_seconds: float = 1.0) -> list:
+    """Speech spans inside [start_s, stop_s) that no decoded word covers.
+
+    This is the VAD used *for* the transcription instead of against it: the gate that skipped
+    "speechless" chunks was withdrawn because it deleted dialogue, but the inverse question —
+    "the detector says there is speech here and the decoder produced nothing" — is one only the
+    detector can answer, and acting on it can only *add* words.
+
+    Measured on the test film, 30 s chunks: the model silently skipped ~7 s of dialogue in the
+    middle of one chunk (three sentences that appear when the identical audio is decoded as a
+    single chunk or at 31 s / 45 s boundaries). Nothing in the SRT says a line is missing.
+
+    *min_seconds* filters detector blips: a span must be at least this long to be worth a
+    second decode.
+    """
+    if not spans or min_seconds <= 0:
+        return []
+    covered = sorted((w[1], w[2]) for w in words)
+    holes = []
+    for a, b in spans:
+        a, b = max(a, start_s), min(b, stop_s)
+        if b - a < min_seconds:
+            continue
+        cursor = a
+        for (ws, we) in covered:
+            if we <= cursor:
+                continue
+            if ws >= b:
+                break
+            if ws > cursor:
+                holes.append((cursor, min(ws, b)))
+            cursor = max(cursor, we)
+            if cursor >= b:
+                break
+        if cursor < b:
+            holes.append((cursor, b))
+    return [(round(a, 3), round(b, 3)) for a, b in holes if b - a >= min_seconds]
+
+
 def vad_gate_enabled() -> bool:
     """Whether the VAD may SKIP chunks. Off by default — measured on a full film, it deleted
     dialogue.

@@ -402,6 +402,14 @@ back to CPU when no device is present.
   holding the 47–53 s shouts as speechless and skipped it, where 0.4 decodes it (3 cues → 4)
   while every music-only chunk is still skipped. `VSCL_AISUBS_VAD_MODEL=none` disables the VAD
   outright.
+- **Speech the decoder skipped inside a chunk is recovered.** The transducer silently omitted
+  ~13 s of dialogue in the middle of a 30 s chunk — three sentences that the *identical audio*
+  transcribes correctly at 31 s, 45 s or single-chunk boundaries — and nothing in the SRT says a
+  line is missing. So the VAD's "where is the speech?" answer is compared with what the chunk
+  produced: any speech span ≥1 s that no word covers is decoded again on its own, and whatever
+  comes back is **added**. It can only add — never remove — which is the opposite direction from
+  the chunk-skipping gate withdrawn in v1.4.3. Measured on the reproduction case: 23 words
+  recovered. See `.research/2026-09-16-asr-recall-gaps.md`.
 - Long media is decoded in 30 s chunks (`CHUNK_SECONDS` in
   `parakeet_runner.py`; override with `VSCL_AISUBS_PARAKEET_CHUNK`). Chunk
   length is bounded by two *measured* limits of the int8 ONNX conversion, not by
@@ -567,7 +575,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 268 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 274 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 
