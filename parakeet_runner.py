@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 
 from core.audio import SAMPLE_RATE, choose_audio_stream, cleanup_temp, decode_to_wav16k, list_audio_streams
 from core.cues import apply_quality
+from core.vad import holds_speech, resolve_vad_model, speech_extent, speech_spans
 from core.procs import install_termination_handler
 from core.srt import write_srt
 
@@ -58,6 +59,11 @@ from core.parakeet_models import (  # noqa: E402
 
 def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def _debug_enabled() -> bool:
+    """VSCL_AISUBS_DEBUG=1 — the same convention the CLI and the backends use."""
+    return os.environ.get("VSCL_AISUBS_DEBUG") == "1"
 
 
 def load_float32_16k(wav_path: str) -> "np.ndarray":
@@ -289,9 +295,24 @@ def main():
     # one giant stream — a full film used to take the machine down.
     ranges = chunk_plan(len(samples), resolve_chunk_seconds() * SAMPLE_RATE)
     overlap = int(CHUNK_OVERLAP_SECONDS * SAMPLE_RATE)
+    # Ask a trained detector where the speech is (core/vad.py). Measured on this project's
+    # own film: 53.7s of speech in a 60s dialogue minute, none across a known 5.6s music
+    # gap, none in 60s of credits. Energy alone cannot find those gaps (the film's "silence"
+    # sits 8.5 dB below its peak), and a chunk with no speech needs no decode at all.
+    speech = None
+    vad_model = resolve_vad_model()
+    if vad_model:
+        try:
+            speech = speech_spans(samples, vad_model, SAMPLE_RATE)
+        except Exception as exc:  # noqa: BLE001 — never let the VAD stop a transcription
+            emit({"type": "status", "msg": f"Parakeet: VAD unavailable ({exc}) — continuing without it"})
     words = []
     n_chunks = len(ranges)
+    skipped = 0
     for ci, (start, stop) in enumerate(ranges, 1):
+        if speech is not None and not holds_speech(speech, start / SAMPLE_RATE, stop / SAMPLE_RATE):
+            skipped += 1
+            continue
         if n_chunks > 1:
             emit({"type": "status", "msg": f"Parakeet: decoding chunk {ci}/{n_chunks} (+{time.time()-t0:.0f}s)"})
         stream = rec.create_stream()
@@ -307,6 +328,22 @@ def main():
             # and there is no following chunk to hand those words to.
             stop_s = stop / SAMPLE_RATE if ci < n_chunks else float("inf")
             words.extend(keep_nominal_window(chunk_words, start / SAMPLE_RATE, stop_s))
+
+    # The VAD's spans are used to skip chunks, NOT to re-time words: measured on this
+    # project's film, narrowing word boundaries against them changed nothing in the output
+    # (identical cues, words, spans and CPS), because the transducer already places words
+    # inside speech — its timestamps are compressed, not misplaced. Skipping, by contrast,
+    # is a real saving on music-heavy media (2 of 2 chunks skipped in a 60s credits clip,
+    # 3s instead of 10s). See .research/2026-09-16-github-survey.md.
+    if skipped and speech is not None:
+        emit({"type": "status", "msg": f"Parakeet: skipped {skipped} chunk(s) with no speech"})
+    if _debug_enabled() and words:
+        extent = speech_extent(words)
+        span = max(0.001, words[-1][2] - words[0][1])
+        emit({"type": "status", "msg": (
+            f"Parakeet: {len(words)} words over {span:.0f}s "
+            f"({extent:.0f}s of speech, {60 * len(words) / span:.0f} wpm)"
+        )})
 
     if not words:
         emit({"type": "status", "msg": "No speech detected."})

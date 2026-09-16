@@ -98,9 +98,21 @@ than dismissed.
 
 ## Ranked for this plugin, after the measurements
 
-1. Silence **adjustment** (Idea 3): tighten word ends around detected silence; never gate.
-2. Keep each word's real end; measure reading speed from speech extent (carried over).
-3. Diarization for speaker labels (Idea 4) — the largest genuine feature gap.
-4. Song/lyric handling with `<i>` (VLC support verified at source).
-5. Unverified and labelled as such: AMD/Intel Vulkan, VLC 4.0 registration, Parakeet v3
+1. ~~Silence **adjustment**~~ — **built, measured, deleted.** Narrowing word boundaries
+   against the VAD's spans changed *nothing* in the output: identical cue count, identical
+   words, identical cue spans, identical CPS violations (35 cues / 187 words / 1.12 s median
+   span / 14 cues over 20 CPS, before and after). The reason is now clear from everything
+   else measured here: the transducer's timestamps are **compressed, not misplaced**, so
+   words already sit inside speech and there is nothing at the cue level to correct. The
+   RMS-based silence detector it was going to consume was also deleted — unusable on film
+   audio, see above.
+2. **Shipped instead: skipping chunks with no speech** (`core/vad.py`,
+   `install-vad-model.sh`). A chunk the VAD finds no speech in needs no decode: on a 60 s
+   music/credits clip, 2 of 2 chunks skipped, 3 s instead of 10 s, no text invented. This is
+   the one VAD use that cannot lose anything, because a chunk with no speech has nothing to
+   lose.
+3. Keep each word's real end; measure reading speed from speech extent (carried over).
+4. Diarization for speaker labels (Idea 4) — the largest genuine feature gap.
+5. Song/lyric handling with `<i>` (VLC support verified at source).
+6. Unverified and labelled as such: AMD/Intel Vulkan, VLC 4.0 registration, Parakeet v3
    per-language accuracy.

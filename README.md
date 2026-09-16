@@ -371,6 +371,11 @@ back to CPU when no device is present.
 - Parakeet decodes audio with `ffmpeg`, which must be on PATH — `install.sh`
   checks for it up front and aborts with a clear message otherwise (the
   runner also errors cleanly if ffmpeg is missing at runtime).
+- Chunks holding no speech are **skipped**, via Silero VAD (`install-vad-model.sh`,
+  optional, ~630 KB). Measured on a 60 s music/credits clip: 2 of 2 chunks skipped, 3 s
+  instead of 10 s, and no text invented. The VAD is only ever asked *where the speech is* —
+  it never removes a transcribed word, because whisper.cpp's own `--vad` was measured
+  dropping real dialogue and a missing line is invisible.
 - Long media is decoded in 30 s chunks (`CHUNK_SECONDS` in
   `parakeet_runner.py`; override with `VSCL_AISUBS_PARAKEET_CHUNK`). Chunk
   length is bounded by two *measured* limits of the int8 ONNX conversion, not by
@@ -402,6 +407,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `auto` | `auto` | backend selection |
 | `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` | auto | WhisperX (runner); `cpu` = `-ng` for whisper.cpp |
 | `VSCL_AISUBS_PARAKEET_CHUNK` | seconds (5–600) | 30 | Parakeet chunk length — smaller = less RAM, larger = fewer seams |
+| `VSCL_AISUBS_VAD_MODEL` | path to `silero_vad.onnx` | `~/.local/share/sherpa-onnx/models/` | where the VAD model lives; absent = no chunk skipping |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
@@ -534,7 +540,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 246 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 253 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 
@@ -640,6 +646,7 @@ If the setup script doesn't work for your system:
    ```bash
    uv pip install --python venv-whisperx/bin/python sherpa-onnx  # Parakeet runtime
    bash install-parakeet-model.sh                                # Parakeet model (~0.7 GB)
+   bash install-vad-model.sh                                     # Silero VAD (~630 KB, optional)
    bash install-nllb-model.sh                                    # translate cascade (~1.3 GB)
    bash install-whisper-cpp.sh small                             # Vulkan engine (AMD/Intel/NVIDIA)
    ```
