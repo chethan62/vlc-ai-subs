@@ -98,13 +98,11 @@ video). Cues now queue and appear when playback reaches their start, up to one p
 at least 1.5 s, and cues passed over are dropped rather than replayed.
 
 The position comes from the input's `time` variable: microseconds, the same unit
-`vlc.osd.message` takes, checked against VLC 3.0.23's `src/input/var.c` and
-`modules/lua/libs/osd.c`.
-
-Honest gap: the scheduling is covered by the poll harness (37 checks, both Lua
-versions) and the API and units against VLC's own source, but no on-screen OSD
-rendering has been *observed* in a real VLC run on this machine — its Qt menu
-popups are not reachable by the automation available here.
+`vlc.osd.message` takes. Both were confirmed in a **real VLC 3.0.23 run**, not only
+from the source: a Lua interface probe read `time` advancing 1.5 s per 1.5 s of
+playback (150238 → 1650187 → 3150225 µs), and the same
+`vlc.osd.message(text, chan, "bottom", µs)` call the extension makes put
+"OSD PROOF AISUBS" on screen — read back by OCR of a screenshot of the video window.
 
 ## Cancelling a run
 
