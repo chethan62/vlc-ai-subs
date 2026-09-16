@@ -87,6 +87,26 @@ Did you know that?
 I did not.
 ```
 
+## Loading the SRT into the playing video
+
+`vlc.input.add_subtitle(path, autoselect)` takes a second argument that decides
+whether the track is *shown*, and it defaults to **false** — from
+`modules/lua/libs/input.c` at 3.0.23:
+
+```c
+bool b_autoselect = false;
+if( lua_gettop( L ) >= 2 ) b_autoselect = lua_toboolean( L, 2 );
+```
+
+Called with one argument the file is added and nothing appears. Measured in a real
+VLC: `spu-es` stayed **-1** and the caption never reached the screen, while the dialog
+said "Subtitles loaded". With `true`, `spu-es` became **2** and OCR of a screenshot
+read the caption back off the video.
+
+The dialog now asks for the autoselect and reports what actually happened:
+"Subtitles loaded." only when a subtitle track really is selected, otherwise
+"SRT: <path> — choose it under Subtitles".
+
 ## Real-time OSD
 
 OSD mode used to push each cue the moment the transcription produced it. Nothing

@@ -389,28 +389,42 @@ function get_input_item()
     return nil
 end
 
+-- Is a subtitle track actually selected on the running input? (-1 = none.)
+function subtitle_selected()
+    local ok, spu = pcall(function()
+        return vlc.var.get(vlc.object.input(), "spu-es")
+    end)
+    return ok and type(spu) == "number" and spu >= 0
+end
+
+
 function add_subtitle_track(srt_path)
-    local ok
-    -- vlc.input.add_subtitle exists in VLC 3.0.x AND in master (4.0-dev) —
-    -- verified in modules/lua/libs/input.c on 2026-09-15; there is no
-    -- vlc.player table in either, so it is only a last-ditch attempt below.
-    ok = pcall(function() vlc.input.add_subtitle(srt_path) end)
-    if ok then return true end
-    ok = pcall(function() vlc.player.add_subtitle(srt_path) end)
-    if ok then return true end
-    -- Setting the input variable needs a real input; without one this used to
-    -- return true anyway (the pcall "succeeded" at doing nothing), so callers
-    -- were told the subtitles loaded when nothing had happened.
+    -- vlc.input.add_subtitle(path, autoselect) exists in VLC 3.0.x AND in master
+    -- (4.0-dev) — modules/lua/libs/input.c. The second argument decides whether the
+    -- track is *shown*, and it defaults to false:
+    --     bool b_autoselect = false;
+    --     if( lua_gettop( L ) >= 2 ) b_autoselect = lua_toboolean( L, 2 );
+    -- Called with one argument the file is added and nothing appears — measured in a
+    -- real VLC: spu-es stayed -1 and the caption never reached the screen while the
+    -- dialog said "Subtitles loaded". With `true`, spu-es became 2 and OCR of a
+    -- screenshot read the caption back off the video.
+    local ok = pcall(function() vlc.input.add_subtitle(srt_path, true) end)
+    if ok and subtitle_selected() then return true end
+
+    -- Last-ditch forms. There is no vlc.player table in 3.0.x or master, so that
+    -- call is a no-op kept only in case a future version adds one; the input
+    -- variable can add a subtitle but cannot select one, which is why the result is
+    -- now judged by spu-es rather than by "the call did not raise".
+    pcall(function() vlc.player.add_subtitle(srt_path) end)
     local input
     pcall(function()
         local obj = vlc.object.input()
         if obj then input = obj end
     end)
     if input then
-        ok = pcall(function() vlc.var.set(input, "sub-file", srt_path) end)
-        if ok then return true end
+        pcall(function() vlc.var.set(input, "sub-file", srt_path) end)
     end
-    return false
+    return subtitle_selected()
 end
 
 function register_osd()
@@ -1057,8 +1071,14 @@ function process_results(tmp_file, mode)
     end
 
     if mode == "srt" then
-        load_subtitle(srt_path)
-        set_status("Done! " .. seg_count .. " segments. Subtitles loaded.")
+        if load_subtitle(srt_path) then
+            set_status("Done! " .. seg_count .. " segments. Subtitles loaded.")
+        else
+            -- Do not claim a load that did not happen: the subtitle file exists, and
+            -- VLC's own Subtitles menu will take it.
+            set_status("Done! " .. seg_count .. " segments. SRT: " .. srt_path
+                .. " — choose it under Subtitles")
+        end
     else
         set_status("Done! " .. seg_count .. " segments. SRT: " .. srt_path)
     end
@@ -1070,13 +1090,14 @@ end
 
 function load_subtitle(srt_path)
     local f = io.open(srt_path, "r")
-    if not f then return end
+    if not f then return false end
     f:close()
     if add_subtitle_track(srt_path) then
         vlc.msg.info("[AI Subs] Loaded: " .. srt_path)
-    else
-        vlc.msg.warn("[AI Subs] Auto-load failed. Add manually: " .. srt_path)
+        return true
     end
+    vlc.msg.warn("[AI Subs] Auto-load failed. Add manually: " .. srt_path)
+    return false
 end
 
 function set_status(text)
