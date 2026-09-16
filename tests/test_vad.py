@@ -54,6 +54,17 @@ def test_model_discovery_prefers_the_environment(tmp_path, monkeypatch):
     assert resolve_vad_model() == str(model)
 
 
+def test_the_vad_can_be_switched_off(monkeypatch):
+    """Disabling has to work even with the model installed.
+
+    A non-existent path does NOT disable it — resolve falls back to the standard locations —
+    and that made an A/B impossible: the "off" arm of a comparison was quietly still on.
+    """
+    for value in ("none", "off", "0", "no", "disabled", "FALSE"):
+        monkeypatch.setenv("VSCL_AISUBS_VAD_MODEL", value)
+        assert resolve_vad_model() is None, f"{value!r} must disable the VAD"
+
+
 def test_a_missing_model_is_not_an_error(monkeypatch):
     """Callers treat None as 'continue without VAD' — the plugin still works.
 

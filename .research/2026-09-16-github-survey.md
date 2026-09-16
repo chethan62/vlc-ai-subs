@@ -158,3 +158,48 @@ subtitle track is ground truth for sync. Extract it (`ffmpeg -map 0:s:N`), then 
 offset by cross-correlating cue starts — a nearest-cue comparison across two differently
 segmented tracks is too noisy to conclude anything from (it gave +0.367 s with a ±3 s
 spread where the fit gave a confident +0.53 s).
+
+## Addendum 2 — the VAD gate was costing dialogue, at the library's default threshold
+
+v1.4.0 gated Parakeet chunks on Silero VAD using the library's default threshold of 0.5. The
+same reference track exposed it: its first cue is at **47.05 s**, ours began at **59.76 s**.
+Running the runner over the film's first 90 s showed why — the gate had skipped the chunk
+holding that dialogue.
+
+Threshold sweep, per 30 s chunk, on three clips whose dialogue content is known:
+
+| threshold | opening (47–73 s has dialogue) | credits (music, no dialogue) | dense dialogue |
+| --- | --- | --- | --- |
+| 0.50 | 0.6 s of speech, **2/3 chunks skipped** | 0.0 s, 2/2 skipped | 53.7 s, 0/2 skipped |
+| **0.40** | **1.5 s, 1/3 skipped** | **0.0 s, 2/2 skipped** | 54.0 s, 0/2 skipped |
+| 0.35 | 2.2 s, 1/3 skipped | 0.7 s, 1/2 skipped | 54.3 s, 0/2 skipped |
+| 0.25 | 9.2 s, 1/3 skipped | 2.0 s, 1/2 skipped | 55.1 s, 0/2 skipped |
+
+The opening's remaining 1/3 is **correct** — chunk 1 is the first 30 s, and the reference
+track confirms there is no dialogue before 47 s. So 0.4 is the strongest threshold that still
+skips every music-only chunk while decoding every chunk that holds dialogue. With it, the
+opening produces **4 cues instead of 3**: the previously-skipped chunk is decoded again.
+
+**The testing lesson:** the tests written for the gate covered the *arithmetic* (a chunk with
+any speech is never skipped) but not the *detector's sensitivity* — the gate did exactly what
+it was told, on a verdict that was wrong. Thresholds borrowed from a library's defaults need
+sweeping against media whose content you know.
+
+**And a second lesson, from the same investigation:** `VSCL_AISUBS_VAD_MODEL=/nonexistent` did
+not disable the VAD, because a non-existent path falls through to the standard locations. The
+"VAD off" arm of an earlier A/B was therefore quietly still on. Explicit disable values
+(`none`/`off`/`0`/`no`) now exist, and a feature that cannot be turned off should be assumed
+to have made every A/B run against it a lie.
+
+### What remains a model property, not a bug
+
+With the gate fixed, the film's opening still yields 4 cues where the reference has 9. Three
+of the differences are not ours to fix:
+
+- `One! Two! Three!` at 47.05 s is a **countdown on screen**, which professional tracks
+  subtitle and ASR cannot hear — whisper.cpp called that region `I'm sorry.`, Parakeet
+  nothing.
+- The reference splits short exclamations (`Yeah!`, `Come on!`) into separate cues; Parakeet
+  and whisper.cpp both merge or drop them in a loud, music-heavy mix.
+- This is a **recall** property of the models on this material, documented rather than
+  papered over: nothing in the plugin removes words that were transcribed.

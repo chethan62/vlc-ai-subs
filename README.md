@@ -385,7 +385,12 @@ back to CPU when no device is present.
   optional, ~630 KB). Measured on a 60 s music/credits clip: 2 of 2 chunks skipped, 3 s
   instead of 10 s, and no text invented. The VAD is only ever asked *where the speech is* —
   it never removes a transcribed word, because whisper.cpp's own `--vad` was measured
-  dropping real dialogue and a missing line is invisible.
+  dropping real dialogue and a missing line is invisible. Set `VSCL_AISUBS_VAD_MODEL=none`
+  to switch it off entirely.
+- The VAD's detection threshold is **0.4, not the library default 0.5** — measured, because
+  0.5 was silently costing dialogue. On the test film's opening, 0.5 scored the chunk holding
+  the 47–53 s shouts as speechless and the gate skipped it; at 0.4 that chunk is decoded
+  again (the opening went from 3 cues to 4) while every music-only chunk is still skipped.
 - Long media is decoded in 30 s chunks (`CHUNK_SECONDS` in
   `parakeet_runner.py`; override with `VSCL_AISUBS_PARAKEET_CHUNK`). Chunk
   length is bounded by two *measured* limits of the int8 ONNX conversion, not by
@@ -417,7 +422,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_BACKEND` | `whisperx` \| `parakeet` \| `whispercpp` (alias `whisper_cpp`) \| `auto` | `auto` | backend selection |
 | `VSCL_AISUBS_DEVICE` | `cuda` \| `cpu` | auto | WhisperX (runner); `cpu` = `-ng` for whisper.cpp |
 | `VSCL_AISUBS_PARAKEET_CHUNK` | seconds (5–600) | 30 | Parakeet chunk length — smaller = less RAM, larger = fewer seams |
-| `VSCL_AISUBS_VAD_MODEL` | path to `silero_vad.onnx` | `~/.local/share/sherpa-onnx/models/` | where the VAD model lives; absent = no chunk skipping |
+| `VSCL_AISUBS_VAD_MODEL` | path, or `none`/`off`/`0`/`no` to disable | `~/.local/share/sherpa-onnx/models/` | where the VAD model lives; absent or disabled = no chunk skipping |
 | `VSCL_AISUBS_COMPUTE` | `int8_float16` \\| `int8_float32` \\| `float16` \\| `float32` \\| `int8` | per device | WhisperX (runner) |
 | `VSCL_AISUBS_MODEL_CACHE` | directory path | `~/.cache/huggingface` | WhisperX (runner) |
 | `VSCL_AISUBS_NLLB` | `1` \| `0` | `1` | translate task (0 = Whisper translate) |
@@ -550,7 +555,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 260 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 261 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

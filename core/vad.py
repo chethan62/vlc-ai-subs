@@ -31,14 +31,40 @@ BUFFER_SECONDS = 4
 
 SAMPLE_RATE = 16000
 
+# Speech probability at which Silero calls a frame speech. The library default is 0.5, and
+# 0.5 was measured to be WRONG for this job: on the project's own film it scored the
+# opening's second chunk — which holds the shouts the professional subtitle track
+# transcribes at 47-53 s — as 0.6 s of speech in 89 s, and the gate would have skipped that
+# chunk and lost the dialogue. The sweep, per 30 s chunk:
+#
+#   threshold   opening (47-73 s has dialogue)   credits (music, no speech)   dense dialogue
+#   0.50        0.6 s, 2/3 chunks skip           0.0 s, 2/2 skip              53.7 s, 0/2 skip
+#   0.40        1.5 s, 1/3 skip                  0.0 s, 2/2 skip              54.0 s, 0/2 skip
+#   0.35        2.2 s, 1/3 skip                  0.7 s, 1/2 skip              54.3 s, 0/2 skip
+#   0.25        9.2 s, 1/3 skip                  2.0 s, 1/2 skip              55.1 s, 0/2 skip
+#
+# 0.4 is the strongest threshold that still skips every music chunk while decoding every
+# chunk holding dialogue: 1/3 == the genuinely silent opening chunk, which the reference
+# track agrees has nothing before 47 s.
+VAD_THRESHOLD = 0.4
+
+# Values of VSCL_AISUBS_VAD_MODEL that switch the VAD off entirely, for A/B testing and for
+# anyone who would rather not have a detector decide which chunks get decoded.
+_DISABLED = frozenset({"none", "off", "0", "no", "disabled", "false"})
+
 
 def resolve_vad_model() -> str | None:
-    """Path to silero_vad.onnx, or None when it is not installed.
+    """Path to silero_vad.onnx, or None when it is not installed or switched off.
 
     Missing model is not an error: every caller treats None as "continue without VAD",
     which keeps the plugin working on a machine that never downloaded the 630 KB model.
+    ``VSCL_AISUBS_VAD_MODEL=none`` (or off/0/no) disables it even when installed — a
+    non-existent path is NOT one of those values: it falls back to the standard locations,
+    which is why setting one to /nonexistent does not disable anything.
     """
     env = os.environ.get("VSCL_AISUBS_VAD_MODEL", "").strip()
+    if env.lower() in _DISABLED:
+        return None
     candidates = [
         env,
         os.path.expanduser("~/.local/share/sherpa-onnx/models/silero_vad.onnx"),
@@ -51,7 +77,7 @@ def resolve_vad_model() -> str | None:
 
 
 def speech_spans(samples, model_path: str, sample_rate: int = SAMPLE_RATE,
-                 threshold: float = 0.5) -> list:
+                 threshold: float = VAD_THRESHOLD) -> list:
     """[(start, end)] seconds the VAD scores as speech.
 
     Raises on a broken model — callers decide whether to continue without it, and the
