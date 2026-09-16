@@ -129,7 +129,20 @@ function activate()
     vlc.msg.info("[AI Subs] activate() called")
     create_dialog()
 end
-function deactivate() if dlg then dlg:delete(); dlg = nil end end
+function deactivate()
+    -- VLC keeps calling a live timer after the dialog is deleted, and
+    -- poll_progress then indexes widgets that no longer exist:
+    --   "aisubs.lua:846: attempt to index upvalue 'progress_bar' (a nil value)"
+    -- (measured in a real VLC run when the dialog was closed mid-transcription).
+    -- Drop the widget references so every guarded use skips the UI, and cancel
+    -- the timer. The Python run continues either way — its SRT is still written.
+    if _poll_tmr then
+        pcall(function() _poll_tmr:cancel() end)
+        _poll_tmr = nil
+    end
+    progress_bar, status_label, details_label, cue_label, debug_label = nil, nil, nil, nil, nil
+    if dlg then dlg:delete(); dlg = nil end
+end
 function close()      deactivate() end
 
 function menu() return {"Generate Subtitles"} end
@@ -843,10 +856,10 @@ function start_generation()
     end
 
     set_status("Transcribing with " .. _poll_engine .. " (" .. shown_model .. ")... please wait")
-    progress_bar:set_value(0)
+    if progress_bar then progress_bar:set_value(0) end
 
     -- Show debug command so user can run it from terminal if needed
-    debug_label:set_text("Debug: " .. cmd)
+    if debug_label then debug_label:set_text("Debug: " .. cmd) end
     _poll_tmr = vlc.timer(poll_progress)
     _poll_tmr:schedule(POLL_US)
 end
@@ -861,7 +874,7 @@ function poll_progress()
     -- Update progress bar based on elapsed vs estimated
     if _poll_est_total > 0 then
         local pct = math.min(95, (_poll_secs / _poll_est_total) * 100)
-        progress_bar:set_value(pct)
+        if progress_bar then progress_bar:set_value(pct) end
     end
 
     local f = io.open(_poll_tmp, "r")
@@ -869,7 +882,7 @@ function poll_progress()
         -- Temp file gone — shouldn't happen; keep waiting
         local eta = math.max(0, _poll_est_total - _poll_secs)
         set_status(string.format("Transcribing with %s (%s)... %ds  ETA ~%ds", _poll_engine, _poll_model, _poll_secs, eta))
-        _poll_tmr:schedule(POLL_US)
+        if _poll_tmr then _poll_tmr:schedule(POLL_US) end
         return
     end
 
@@ -910,14 +923,14 @@ function poll_progress()
     if d and (d.type == "done" or d.type == "error") then
         -- Python finished — process results
         _poll_tmr = nil
-        progress_bar:set_value(100)
+        if progress_bar then progress_bar:set_value(100) end
         update_details()
         process_results(_poll_tmp, _poll_mode)
     else
         local eta = math.max(0, _poll_est_total - _poll_secs)
         set_status(string.format("Transcribing with %s (%s)... %ds  ETA ~%ds", _poll_engine, _poll_model, _poll_secs, eta))
         update_details()
-        _poll_tmr:schedule(POLL_US)
+        if _poll_tmr then _poll_tmr:schedule(POLL_US) end
     end
 end
 

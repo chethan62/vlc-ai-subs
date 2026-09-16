@@ -305,3 +305,62 @@ def test_sigterm_stops_children_and_exits(monkeypatch):
     assert calls == ["stop"]
     # Restore the default so a later signal cannot confuse the test run.
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+# ── the error the user actually sees must be readable ──────────────────────
+# Measured in a live VLC run: a WhisperX CUDA OOM reached the dialog as ~4 KB of
+# pyannote warnings plus a traceback stuffed into a status label.
+
+def test_friendly_error_is_one_short_line():
+    import aisubs_whisper
+    exc = RuntimeError("WhisperX failed (rc=1): n`\n" + ("pyannote warning\n" * 200))
+    msg = aisubs_whisper.friendly_error(exc)
+    assert len(msg) < 300, len(msg)
+    assert "\n" not in msg
+    assert msg.startswith("WhisperX failed")
+
+
+def test_friendly_error_explains_a_gpu_oom_and_the_way_out():
+    import aisubs_whisper
+    exc = RuntimeError(
+        'WhisperX failed (rc=1): stdout: {"type":"error","msg":"CUDA failed with error out of memory"}'
+    )
+    msg = aisubs_whisper.friendly_error(exc)
+    assert "Out of GPU memory" in msg
+    assert "Parakeet" in msg and "smaller model" in msg
+
+
+def test_friendly_error_drops_an_embedded_traceback():
+    import aisubs_whisper
+    exc = RuntimeError('boom\nTraceback (most recent call last):\n  File "x", line 1\nValueError: nope')
+    assert aisubs_whisper.friendly_error(exc) == "boom"
+
+
+class _RaisingBackend(_FakeBackend):
+    """Resolves fine, then fails the way a real engine does — with its whole
+    stderr/stdout embedded in the exception."""
+
+    def transcribe(self, media_path, model_name, language, task):
+        raise RuntimeError(
+            "WhisperX failed (rc=1): " + ("STDERR noise line\n" * 300)
+            + "CUDA failed with error out of memory"
+        )
+
+
+def test_backend_failure_keeps_detail_in_the_logs_not_the_ui(monkeypatch, capsys):
+    """The status label gets one line; the diagnostic still reaches stderr (which
+    VLC logs) so nothing is lost for debugging."""
+    import aisubs_whisper
+
+    monkeypatch.setattr(aisubs_whisper, "resolve_backend", lambda *_a, **_k: _RaisingBackend([]))
+    monkeypatch.setattr(sys, "argv", ["aisubs_whisper.py", os.path.abspath(__file__), "tiny", "en", "transcribe"])
+    with pytest.raises(SystemExit):
+        aisubs_whisper.main()
+
+    captured = capsys.readouterr()
+    last = json.loads(captured.out.strip().splitlines()[-1])
+    assert last["type"] == "error"
+    assert len(last["msg"]) < 400, len(last["msg"])
+    assert "Out of GPU memory" in last["msg"]
+    assert "Traceback" not in last["msg"]
+    assert "STDERR noise line" in captured.err, "full detail must still reach the logs"

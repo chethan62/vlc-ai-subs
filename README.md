@@ -61,7 +61,7 @@ Then:
 
 1. **Restart VLC**
 2. Open a video
-3. **View → AI Subs Generator**
+3. **View → AI subtitle generator (WhisperX/Parakeet)**
 4. Click **Generate**
 
 > **Where you clone matters on Windows.** `setup.bat` installs the Lua extension
@@ -407,7 +407,7 @@ ls -la /path/to/video.srt
 # Should print: True
 ```
 
-In VLC: restart → open a video → **View → AI Subs Generator** → click **Generate**.
+In VLC: restart → open a video → **View → AI subtitle generator (WhisperX/Parakeet)** → click **Generate**.
 
 ## Debugging
 
@@ -436,6 +436,16 @@ The extension removes the mirror, the temp SRT and the pid file afterwards.
 - **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, `en-US`, etc.
 - **Task** — `Translate to English` (default) or `Transcribe (same language)`.
 - **Mode** — `Generate & Load SRT` (default) or `Real-time OSD`.
+- **Failures read as one line** — a backend error is shown as a short, actionable
+  status (`… | Out of GPU memory (VLC itself holds some): close other video
+  windows, choose a smaller model, or use Parakeet`), while the full traceback goes
+  to VLC's log and `/tmp/aisubs_debug.log`. It used to paste the entire
+  stderr/stdout — measured at ~4 KB of warnings — into the status label.
+- **Closing the dialog mid-run is safe** — it cancels the progress timer (VLC
+  keeps calling a live timer after the dialog is deleted, and the callback then
+  indexed the removed progress bar: `attempt to index upvalue 'progress_bar' (a
+  nil value)`, seen in a real run) and the transcription still finishes, writing
+  its SRT.
 - **Cancel** — stops the run (its process tree, including the model subprocess); starting a new run cancels the previous one.
 - **Remembered settings** — engine/model/language/task/mode are stored in `<vlc user data dir>/vlc-ai-subs/settings.conf` and restored next session; the details pane shows the engine, model, elapsed, ETA and cue count, plus the latest transcribed cue.
 

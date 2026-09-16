@@ -69,6 +69,25 @@ def _log_debug(msg: str) -> None:
         pass
 
 
+def friendly_error(exc: BaseException) -> str:
+    """One readable, actionable line for the dialog; detail stays in the logs.
+
+    The dialog renders this in a status label. A failed backend run embeds its
+    whole stderr and stdout in the exception, so a real CUDA OOM reached the user
+    as thousands of characters of pyannote warnings plus a traceback — measured
+    in a live VLC run, where the dialog showed that wall of text.
+    """
+    raw = str(exc)
+    first = " ".join(raw.split()).strip() or exc.__class__.__name__
+    first = first.split("Traceback")[0].strip() or first
+    if len(first) > 200:
+        first = first[:200].rstrip() + "…"
+    if "out of memory" in raw.lower():
+        return (first + " | Out of GPU memory (VLC itself holds some): close other "
+                       "video windows, choose a smaller model, or use Parakeet")
+    return first
+
+
 # ── Hardware-aware model recommendation ──────────────────────────────────
 
 def _detect_vram_mb() -> int:
@@ -324,9 +343,14 @@ def main():
                 **segment,
             })
     except Exception as exc:
+        # Full detail goes to stderr (VLC logs it) and the debug log; the UI gets
+        # one actionable line — it has only a status label to render into.
+        detail = traceback.format_exc()
+        sys.stderr.write(detail + "\n")
+        _log_debug("transcription failed:\n" + detail)
         emitter.emit({
             "type": "error",
-            "msg": f"Transcription failed: {exc}\n{traceback.format_exc()}",
+            "msg": f"Transcription failed: {friendly_error(exc)}",
         })
         emitter.close()
         sys.exit(1)
