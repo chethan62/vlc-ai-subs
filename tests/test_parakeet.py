@@ -32,13 +32,66 @@ def _no_audio_probe(runner, monkeypatch):
 
 
 def test_tokens_to_words(runner):
-    """BPE tokens with per-token timestamps merge into real words."""
+    """BPE tokens merge into real words, each with a non-zero span.
+
+    A transducer reports the frame a token was emitted on, so a word's own last
+    token timestamp is its start. Taking that as the end gave every single-token
+    word a zero-length span (measured on the real model: 'you' 12.16 -> 12.16), and
+    cue spans built from them came out shorter than the speech.
+    """
     tokens = [" Well", ",", " I", " don", "'", "t", " w", "ish", " to", " go", "."]
     times = [1.0, 1.1, 1.2, 1.2, 1.3, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8]
     words = runner.tokens_to_words(tokens, times)
     assert [w[0] for w in words] == ["Well,", "I", "don't", "wish", "to", "go."]
     assert words[0][1] == 1.0
-    assert words[-1][2] == 1.8
+    # A word closes at the next word's start; the last one gets a single token frame.
+    assert words[0][2] == pytest.approx(1.2)
+    assert words[-1][2] == pytest.approx(1.8 + runner.TOKEN_FRAME_SECONDS)
+    for text, start, end in words:
+        assert end > start, f"{text!r} must have a span"
+
+
+def test_a_word_never_spans_a_silence(runner):
+    """Word ends are clamped, so a gap between words stays visible to the grouper."""
+    words = runner.tokens_to_words([" Just", " You"], [26.96, 78.56])
+    assert words[0][2] > words[0][1], "a word must still have a span of its own"
+    assert words[0][2] <= 26.96 + runner.MAX_WORD_SECONDS, (
+        "if a word's end reached the next word's start across a 52s silence, the "
+        "grouper could no longer see the silence"
+    )
+    assert words[1][1] == pytest.approx(78.56)
+
+
+def test_a_cue_never_bridges_a_long_pause(runner):
+    """The film's worst cue, exactly as measured.
+
+    "Just" is spoken at 26.96s and "You" at 78.56s — 52 seconds apart. The old loop
+    appended the word and *then* checked the span, so the offending word stayed in:
+    one cue, 26.96 -> 78.56, displayed for 51.6s, with "You" shown 52s before it was
+    spoken.
+    """
+    words = [("Just", 26.96, 27.12), ("You", 78.56, 78.72)]
+    seg = runner.words_to_segments(words)
+    assert [s["text"] for s in seg] == ["Just", "You"]
+    for s in seg:
+        assert s["end"] - s["start"] < 1.0, "neither cue may span the silence"
+
+
+def test_a_cue_never_exceeds_the_grouping_span(runner):
+    """The span guard runs before the word is added, not after."""
+    words = [("one", 0.0, 0.3), ("two", 1.0, 1.3), ("three", 6.2, 6.5)]
+    seg = runner.words_to_segments(words)
+    assert len(seg) == 2, "the word past MAX_SPAN_SECONDS starts a new cue"
+    assert seg[1]["text"] == "three"
+    for s in seg:
+        assert s["end"] - s["start"] <= runner.MAX_SPAN_SECONDS + runner.MAX_WORD_SECONDS
+
+
+def test_cue_spans_stay_under_the_display_maximum(runner):
+    """MAX_SPAN_SECONDS + a word's longest span must stay inside the 7 s display
+    maximum, or apply_quality's clamp would cut the tail words off the screen."""
+    from core.cues import MAX_CUE_SECONDS
+    assert runner.MAX_SPAN_SECONDS + runner.MAX_WORD_SECONDS <= MAX_CUE_SECONDS
 
 
 def test_words_to_segments_sentence_split(runner):

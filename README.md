@@ -61,6 +61,13 @@ feature-length film after episode-length media had passed:
 - **Line breaks survive the whole pipeline.** The engines wrap the text, and the
   CLI's hallucination filter then normalised the whitespace, flattening every
   wrapped cue back into a single line.
+- **A cue never bridges a pause, and a word always has a span.** A transducer reports
+  the frame a token was *emitted* on, not a span, so a word's own last-token
+  timestamp is its start — taking that as the end gave every single-token word a
+  zero-length span and made cue spans shorter than the speech. And the grouping guard
+  ran *after* the offending word was added, so "Just" (26.96 s) and "You" (78.56 s) —
+  52 seconds apart in the audio — became one 51.6 s cue that displayed "You" 52
+  seconds early. Verified against the real model on a 120 s slice of the film.
 
 Measured on a 145-minute feature (2 h 18 m, one English track, 1841 cues, 20 m 24 s
 of Parakeet on CPU, 2.7 GB peak):
@@ -68,18 +75,31 @@ of Parakeet on CPU, 2.7 GB peak):
 | | as produced | after |
 | --- | --- | --- |
 | cues with a line over 42 chars | 397 (worst 100) | **0** (worst 42) |
-| cues longer than 7 s | 43 (worst 51.6 s) | **0** (worst 7.0 s) |
+| cues longer than 7 s | 43 (worst 51.6 s) | **0** (worst 6.5 s) |
 | overlapping cues | 1 | **0** |
-| cues | 1841 | 1853 (the necessary splits) |
+| cues | 1841 | 1891 (the necessary splits) |
 | words | 10143 | **10143, same order** |
 
-The one standard the plugin cannot yet meet is reading speed: 505 cues (27.3 %) of
+The one standard the plugin cannot yet meet is reading speed: 453 cues (24.0 %) of
 that film carry more text than 20 CPS allows in the span the engine gave them, the
-worst needing 62 CPS. That is a timestamp problem, not a text problem — the film's
-average density is about 6 CPS, so the time exists; the engine's segments simply
-place the words in the wrong spans. Fixing it properly needs word-level alignment,
-which the **WhisperX engine has** (see *Engines*); the Parakeet route trades that
-timing accuracy for CPU speed. The plugin never shortens the text to hide it.
+worst needing 62 CPS. (The grouping fix above took that from 505 cues / 27.3 %: cue
+spans used to end where a word's own timestamp sat, which was its *start*, so every
+span was short.) **What remains is a property of the model's timestamps, and it is
+measurable:** read the words per minute implied by a cue's own span and you get
+sentences at 409 and 450 wpm, where natural speech is 120–160. Timestamps that place
+six words in 0.8 s are compressed, and a cue's span is built from exactly those
+timestamps. The film averages about 6 CPS, so the time exists — the words are simply
+reported closer together than they were spoken, which also ends each cue slightly
+early. Confirmed on the audio itself, not inferred: whisper.cpp, given a 32 s stretch
+Parakeet transcribed as nothing, answers `(eerie music)` — the silence is real, so
+this is timing, not dropped audio.
+
+Fixing it properly needs word-level alignment, which the **WhisperX engine has**; the
+Parakeet route trades that timing accuracy for CPU speed. The plugin never shortens
+the text to hide it. (Redistributing time *within* a dense run was tried and rejected
+on measurement: of the 505 dense cues only 203 sat in a run with time to spare, and
+fixing those meant moving captions by more than half a second — a sync error is worse
+than a dense caption. It bought 505 → 480, so it was reverted.)
 
 Measured on real files (see `tests/` for the fixtures):
 
@@ -514,7 +534,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 242 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 246 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

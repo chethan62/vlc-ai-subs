@@ -74,8 +74,33 @@ def load_float32_16k(wav_path: str) -> "np.ndarray":
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
+# NeMo transducer encoders run at 10 ms frames with 8x subsampling, so the finest
+# timing the model can report is one 80 ms frame. Sherpa-onnx gives the frame a
+# token was *emitted* on, not a span, so a word's duration has to be derived.
+TOKEN_FRAME_SECONDS = 0.08
+# No single word lasts longer than this (a word whose timestamps claim more is a
+# bad timestamp, and letting it stand stretches the cue it lands in).
+MAX_WORD_SECONDS = 1.0
+# Cue grouping limits. MAX_SPAN_SECONDS stays under the 7 s display maximum on
+# purpose: apply_quality clamps anything longer, and a clamped cue would lose the
+# display time of its later words.
+MAX_SPAN_SECONDS = 6.0
+# A pause this long ends the cue. This is also what keeps the clamp harmless: a cue
+# spanning a silence is split before the clamp can cut its tail off.
+MAX_WORD_GAP_SECONDS = 1.5
+MAX_WORDS_PER_CUE = 12
+
+
 def tokens_to_words(tokens, times) -> list:
-    """Merge sherpa-onnx BPE tokens into words with (text, start, end)."""
+    """Merge sherpa-onnx BPE tokens into words with (text, start, end).
+
+    A word's end is bounded by the *next* word's start. The transducer reports the
+    frame a token was emitted on, so the last token of a word marks its start, not
+    its end: taking that as the end gave every single-token word a zero-length span
+    (measured here: 'you' 12.16 -> 12.16). Cue spans built from those came out
+    shorter than the speech, which inflated the apparent reading speed — the metric
+    that decides whether a cue is too dense.
+    """
     words = []
     cur, cur_start, last_t = "", 0.0, 0.0
     for tok, t in zip(tokens, times):
@@ -89,11 +114,24 @@ def tokens_to_words(tokens, times) -> list:
         last_t = max(last_t, t)
     if cur.strip():
         words.append((cur.strip(), cur_start, last_t))
-    return words
+
+    out = []
+    for i, (text, start, own_t) in enumerate(words):
+        following = words[i + 1][1] if i + 1 < len(words) else own_t + TOKEN_FRAME_SECONDS
+        span = min(MAX_WORD_SECONDS, max(TOKEN_FRAME_SECONDS, following - start))
+        out.append((text, start, start + span))
+    return out
 
 
 def words_to_segments(words) -> list:
-    """Group words into subtitle cues (sentence punctuation / length caps)."""
+    """Group words into subtitle cues (sentence punctuation / length caps / pauses).
+
+    A cue never bridges a long pause or an over-long span. The old loop appended
+    the word and *then* checked the span, so the offending word was included:
+    measured on a 145-minute film, "Just" (26.96s) and "You" (78.56s) — 52 seconds
+    apart in the audio — became one 51.6 s cue. That displayed "You" 52 seconds
+    before it was spoken, and it is why a two-word cue appeared to last 51.6 s.
+    """
     segments, seg = [], []
 
     def flush():
@@ -105,9 +143,11 @@ def words_to_segments(words) -> list:
         seg.clear()
 
     for w in words:
+        if seg and (w[1] - seg[0][1] > MAX_SPAN_SECONDS
+                    or w[1] - seg[-1][2] > MAX_WORD_GAP_SECONDS):
+            flush()
         seg.append(w)
-        span = w[2] - seg[0][1]
-        if w[0][-1:] in ".!?" or len(seg) >= 12 or span > 9.0:
+        if w[0][-1:] in ".!?" or len(seg) >= MAX_WORDS_PER_CUE:
             flush()
     flush()
     return segments
