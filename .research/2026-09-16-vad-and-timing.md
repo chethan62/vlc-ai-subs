@@ -122,14 +122,21 @@ syllables/s.
 
 So the honest version of this finding:
 
-- **Truly impossible cases exist** — 450 and 580 wpm are 8–10 words per second, which no
-  speaker produces. Those are real timestamp defects, in both engines.
-- **The bulk of the "impossible" rates are my metric**, not the engine. A cue-level
-  words-per-minute test needs the words' *audio* spans, which the plugin does not
-  currently keep (it keeps start times and derives ends).
+- **The artifact is visible in the per-cue detail.** WhisperX's long cues are entirely
+  plausible — "You've been able to do this since yesterday since the bird." over 4.38 s is
+  137 wpm — while every implausible rate comes from its *short* cues: "I was 20." 0.76 s,
+  "I was in college." 0.58 s, "Yeah." 0.58 s. Short cues are exactly where a span that ends
+  at the last word's start loses the largest fraction of itself.
+- **Truly impossible cases still exist** — 450 and 580 wpm are 8–10 words per second, which
+  no speaker produces. Those are real timestamp defects, in both engines.
+- **The bulk of the "impossible" rates are the metric**, not the engine. A cue-level
+  words-per-minute test needs the words' *audio* spans, which the plugin does not currently
+  keep (it keeps start times and derives ends).
 - Fixing the metric is itself an improvement worth making: keep each word's real end from
-  the aligner (WhisperX) or the derived on (Parakeet, already bounded by the next word's
+  the aligner (WhisperX) or the derived one (Parakeet, already bounded by the next word's
   start) and measure the reading speed from the *speech* extent rather than the cue span.
+  It also makes a caption linger over its final word's audio instead of vanishing a frame
+  after its start.
 
 ## Song lyrics and italics: VLC's support verified from source
 
