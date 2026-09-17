@@ -17,6 +17,7 @@ Usage: crispasr_runner.py <media> <model> <lang> <task> [mirror_file] [srt_path]
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -97,6 +98,29 @@ def build_command(bin_path: str, wav_path: str, model_arg: str, backend: str,
     return cmd
 
 
+def failure_reason(returncode: int, stderr: str) -> str:
+    """One actionable line for a non-zero exit from the binary.
+
+    A crash is encoded as a negative return code (death by signal), and it writes
+    to the kernel log rather than to stderr — so `rc=-11` with an empty tail is
+    exactly the shape a segfault takes, and neither half of it tells the user
+    anything. Measured 2026-09-17 on v0.8.33: a full-length file makes the binary
+    request a 123.6 GB allocation, the kernel refuses it, and the NULL is
+    dereferenced instead of handled (SIGSEGV in process_one_input).
+    """
+    tail = (stderr or "").strip()[-500:]
+    if returncode < 0:
+        try:
+            why = f"killed by {signal.Signals(-returncode).name}"
+        except ValueError:
+            why = f"killed by signal {-returncode}"
+        if not tail:
+            tail = "no output on stderr (a crash reports to the kernel log)"
+    else:
+        why = f"rc={returncode}"
+    return f"CrispASR failed ({why}): {tail}"
+
+
 def main():
     t0 = time.time()
     if len(sys.argv) < 5:
@@ -154,8 +178,7 @@ def main():
         emit({"type": "status", "msg": "Transcribing..."})
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=None)
         if proc.returncode != 0:
-            tail = (proc.stderr or "").strip()[-500:]
-            emit({"type": "error", "msg": f"CrispASR failed (rc={proc.returncode}): {tail}"})
+            emit({"type": "error", "msg": failure_reason(proc.returncode, proc.stderr or "")})
             sys.exit(1)
         # The binary reports throughput itself; pass it through rather than
         # paraphrasing it (the earlier engines' lies all came from paraphrasing).

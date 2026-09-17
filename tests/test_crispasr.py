@@ -9,7 +9,37 @@ import pytest
 
 from core.crispasr_models import (MODELS, align_enabled, binary, chunk_seconds,
                                   model_argument, model_label, model_tag, pick)
-from crispasr_runner import build_command, parse_srt
+from crispasr_runner import build_command, failure_reason, parse_srt
+
+
+def test_a_signal_death_is_named_not_numbered():
+    """A crash arrives as a negative return code with nothing on stderr.
+
+    Measured 2026-09-17: on a 47.5-minute file v0.8.33 asked the kernel for a
+    123.6 GB allocation, was refused, and dereferenced the NULL (SIGSEGV). The
+    message the user sees must say so — "rc=-11" and an empty tail is
+    indistinguishable from silence, and silence reads as success.
+    """
+    msg = failure_reason(-11, "")
+    assert "SIGSEGV" in msg
+    assert "rc=-11" not in msg
+    assert "kernel log" in msg          # an empty tail must be explained, not shown blank
+
+
+def test_a_signal_with_a_stderr_tail_keeps_the_tail():
+    msg = failure_reason(-6, "Aborted (core dumped)\n")
+    assert "SIGABRT" in msg
+    assert "core dumped" in msg
+
+
+def test_an_ordinary_failure_reports_its_code_and_output():
+    msg = failure_reason(1, "model file missing")
+    assert "rc=1" in msg and "model file missing" in msg
+
+
+def test_the_stderr_tail_is_bounded():
+    """The status line has one label to render into; 500 chars is already plenty."""
+    assert len(failure_reason(1, "x" * 4000)) < 600
 
 
 @pytest.fixture(autouse=True)

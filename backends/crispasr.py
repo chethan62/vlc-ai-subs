@@ -50,13 +50,11 @@ class CrispAsrBackend(TranscriptionBackend):
         proc = run_captured(cmd, timeout=resolve_timeout(task), env=env)
         debug = env.get("VSCL_AISUBS_DEBUG") == "1"
 
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "CrispASR failed (rc={}): {}".format(
-                    proc.returncode, (proc.stderr or "").strip()[-500:],
-                )
-            )
-
+        # The runner's own error event is read BEFORE its exit code is judged. It
+        # always emits one on a failed binary — including the signal name when the
+        # binary crashes — and an early `returncode != 0` check threw that message
+        # away in favour of a bare "rc=1". Only a runner that dies without a
+        # terminal event reaches check_runner_completed below.
         import json
         saw_done = False
         for line in proc.stdout.strip().splitlines():

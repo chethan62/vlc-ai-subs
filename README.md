@@ -129,12 +129,22 @@ one** — which on real releases is the dub rather than the dialogue:
 **A track can also start late.** When the container begins its audio after its video — a real
 film here starts its audio at 1.008 s, 24 frames at 23.976 fps, against video at 0.000 — every
 timestamp we produce is on the *audio* timeline and so sits that far before its container
-position. The plugin **reports** this instead of correcting it, because correcting it was
-measured and made sync worse: against that film's own professional subtitle track, adding the
-lead back moved cues from 0.53 s early to 0.48 s late and cut cue-start matches from 215 to
-131 (the lead and the model's emission lag partly cancel). The status line reads
-`audio starts 1.008s after the video; subtitles are timed to the audio stream` — which is the
-number to check first when every cue looks uniformly early.
+position. The plugin **reports** this instead of correcting it, and two measurements now say
+that is right:
+
+- On that film, adding the full lead back made sync *worse*: cue-start matches within 0.15 s
+  fell 215 → 131. Sweeping every offset (`tools/sync_offset.py`) put its true optimum at
+  **+0.55 s, not +1.008 s** — 220 → 740 matches, 11.3 % → 37.9 %. So the correction a single
+  file appears to "ask for" is neither the lead nor anything derivable from it.
+- On a second film whose audio starts at **0.000 s**, the optimum is **+0.00 s** — applying the
+  first film's value there would cut that file's **52.1 % to 3.1 %**.
+
+The bias is a property of that one file (its reference track sits about half a second from the
+speech it describes), **not of our transcription**, so no correction ships. What the second film
+does show is that on a clean file **52.1 % of our cues land within 0.15 s of professional
+timings with no shift at all**. The status line reads `audio starts 1.008s after the video;
+subtitles are timed to the audio stream` — still the number to check first when every cue looks
+uniformly early.
 
 So asking for English subtitles transcribed the French audio, and an English-only
 model answered with confident nonsense instead of an error:
@@ -467,15 +477,36 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   7 s in those 90 s). The plugin's own `apply_quality` pass takes that to 0 and 0 with every
   word kept — which is why the two layers stay separate: engine supplies text and timings, the
   plugin enforces the published cue limits.
-- **It has a memory ceiling, and the plugin now respects it.** A 20-minute input with the CTC
-  aligner peaked at **8.3 GB RSS plus 4.8 GB swap and was OOM-killed** on this 15 GB machine,
-  where 90 s of the same material runs in ~300 MB. Worth knowing about this machine: its swap
-  is **zram**, a compressed RAM device — so "using swap" costs real memory, and memory pressure
-  here has already killed a *browser*, not just a job. The runner therefore sizes its work from
-  what the machine can actually spare: `--chunk-seconds` is derived from `MemAvailable` (a
-  quarter of it, at the measured ~4 MB of peak per second of audio, clamped to 30–600 s), so a
+- **It has a memory ceiling, and the plugin sizes work from what the machine can spare.** A
+  20-minute input with the CTC aligner peaked at **8.3 GB RSS plus 4.8 GB swap and was
+  OOM-killed** on this 15 GB machine, where 90 s of the same material runs in ~300 MB. Worth
+  knowing about this machine: its swap is **zram**, a compressed RAM device — so "using swap"
+  costs real memory, and memory pressure here has already killed a *browser*, not just a job.
+  The runner therefore sizes its work from `MemAvailable` (a quarter of it, at the measured
+  ~4 MB of peak per second of audio, clamped 30–600 s) rather than from a fixed number, so a
   transcription cannot take the desktop down. `VSCL_AISUBS_CRISPASR_CHUNK` overrides it; `0`
   turns chunking off, which is only safe for short files on a roomy machine.
+- **Corrected 2026-09-17: it does not finish a feature-length file, and chunking does not fix
+  that.** The earlier claim here — that chunking keeps a long run inside 1.2 GB — came from a run
+  that was never verified to complete. Re-run end to end on 47.5 minutes, the binary **crashed**,
+  and the kernel log is unambiguous:
+
+  ```
+  __vm_enough_memory: pid: 76643, comm: crispasr, bytes: 123601297408 not enough memory for the allocation
+  crispasr[76643]: segfault at 0 ... signal 11/SEGV
+  ```
+
+  A request for a **123.6 GB** allocation, refused by the kernel, whose NULL result was
+  dereferenced instead of handled — in `process_one_input`, ~31 minutes in, with memory sitting
+  at a healthy 1.0 GB. This is not gradual growth and chunking does not prevent it: **no CrispASR
+  run longer than ~90 seconds has completed on this machine.** Its long-file support is unproven
+  here rather than merely slow, which is why the engine stays opt-in.
+- **A crashed engine no longer leaves you with nothing.** Three fixes came out of that crash: the
+  runner names the signal (`killed by SIGSEGV`) instead of printing `rc=-11`; the backend reads
+  the runner's error event *before* judging its exit code, instead of replacing a crash diagnosis
+  with a bare `rc=1`; and when an engine dies before producing a single cue, the CLI retries once
+  with the engine the hardware policy would have chosen — saying so in the status line, never
+  silently:
 - **Its own engine does gap-fill too.** The log line `crispasr[parakeet]: gap-fill recovered 89
   word(s) the first pass dropped` is the same class of fix this plugin added in v1.4.4,
   arrived at independently — further evidence that a decoder dropping interior words is a real
@@ -649,8 +680,15 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 290 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 310 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
+```
+
+To reproduce the sync numbers quoted above on your own files — one of ours, one
+professional track:
+
+```bash
+PYTHONPATH= venv/bin/python tools/sync_offset.py our-subtitles.srt professional.srt
 ```
 
 The installer's engine-selection and failure-reporting branches — the ones that

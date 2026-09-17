@@ -214,6 +214,29 @@ def _install_cancel_handler() -> None:
 
 # ── CLI entry-point ──────────────────────────────────────────────────────
 
+def _fallback_engine(backend, language: str | None, task: str):
+    """An engine to retry with when ``backend`` died before producing any cue.
+
+    Returns None when the failed engine *is* the policy's own pick — retrying with
+    the same engine would fail the same way — or when nothing else is usable.
+
+    Measured 2026-09-17: CrispASR v0.8.33 segfaults on a full-length file (it asks
+    the kernel for a 123.6 GB allocation, is refused, and dereferences the NULL
+    instead of handling it), so a user who explicitly picked that engine got no
+    subtitles at all. Falling back to the engine the policy would have chosen is
+    better than an error, as long as the status line says it happened.
+    """
+    pick = auto_engine_for(language, task)
+    try:
+        candidate = resolve_backend(pick)
+    except RuntimeError:
+        try:
+            candidate = resolve_backend("auto")
+        except RuntimeError:
+            return None
+    return None if candidate.name() == backend.name() else candidate
+
+
 def auto_engine_for(language: str | None, task: str = "transcribe") -> str:
     """Engine for ``VSCL_AISUBS_BACKEND`` unset/auto: "parakeet" or "auto".
 
@@ -355,35 +378,70 @@ def main():
         if debug:
             _log_debug(f"audio-track report failed: {exc}")
 
-    # Transcribe
+    # Transcribe. An engine can die before producing a single cue — CrispASR
+    # segfaults on a full-length file (measured 2026-09-17), a model file can
+    # vanish — and leaving the user with nothing when another engine is installed
+    # is worse than retrying once and saying so. Only retried when NO cue was
+    # emitted: partial output from the failed engine would otherwise be replaced
+    # by a differently-shaped cue list behind the UI's back.
     emitter.emit({"type": "status", "msg": "Transcribing..."})
     segments = []
+    emitted = 0
     _t1 = time.time()
-    try:
-        for seg in backend.transcribe(media_path, model_name, language, task):
+
+    def _run(engine, engine_model: str) -> list[dict]:
+        nonlocal emitted
+        produced: list[dict] = []
+        for seg in engine.transcribe(media_path, engine_model, language, task):
             segment = {
                 "start": round(seg["start"], 3),
                 "end": round(seg["end"], 3),
                 "text": seg["text"],
             }
-            segments.append(segment)
+            produced.append(segment)
             emitter.emit({
                 "type": "sub",
-                "i": len(segments),
+                "i": len(produced),
                 **segment,
             })
+        emitted = len(produced)
+        return produced
+
+    try:
+        segments = _run(backend, model_name)
     except Exception as exc:
-        # Full detail goes to stderr (VLC logs it) and the debug log; the UI gets
-        # one actionable line — it has only a status label to render into.
-        detail = traceback.format_exc()
-        sys.stderr.write(detail + "\n")
-        _log_debug("transcription failed:\n" + detail)
+        fallback = _fallback_engine(backend, language, task) if not emitted else None
+        if fallback is None:
+            # Full detail goes to stderr (VLC logs it) and the debug log; the UI gets
+            # one actionable line — it has only a status label to render into.
+            detail = traceback.format_exc()
+            sys.stderr.write(detail + "\n")
+            _log_debug("transcription failed:\n" + detail)
+            emitter.emit({
+                "type": "error",
+                "msg": f"Transcription failed: {friendly_error(exc)}",
+            })
+            emitter.close()
+            sys.exit(1)
+        _log_debug(f"{backend.name()} failed before producing a cue: {exc}")
         emitter.emit({
-            "type": "error",
-            "msg": f"Transcription failed: {friendly_error(exc)}",
+            "type": "status",
+            "msg": f"{backend.name()} failed ({friendly_error(exc)}); "
+                   f"retrying with {fallback.name()}",
         })
-        emitter.close()
-        sys.exit(1)
+        try:
+            segments = _run(fallback, resolve_model_name(model_name, fallback.name(),
+                                                         fallback, language))
+        except Exception as exc2:
+            detail = traceback.format_exc()
+            sys.stderr.write(detail + "\n")
+            _log_debug("fallback transcription failed:\n" + detail)
+            emitter.emit({
+                "type": "error",
+                "msg": f"{fallback.name()} also failed: {friendly_error(exc2)}",
+            })
+            emitter.close()
+            sys.exit(1)
     if debug:
         _log_debug(f"transcription done: {len(segments)} segments in {time.time() - _t1:.1f}s")
 

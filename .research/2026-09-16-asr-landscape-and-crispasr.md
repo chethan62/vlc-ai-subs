@@ -152,10 +152,66 @@ The lesson generalises: an engine's advertised feature (here, forced alignment) 
 nothing while the same engine quietly fixes your worst failure mode (recall). Aim the test at
 your own failures, measure both, and let the numbers choose the positioning.
 
+## Addendum 2026-09-17 — it crashes on a feature-length file, and my earlier memory claim did not hold
+
+Everything above rests on runs of 90 seconds or less. That was not stated as a limitation,
+and it is one.
+
+A full 47.5-minute episode (`Lucky.S01E01`) was run end to end through this backend to get a
+clean-file comparison. **It never finished.** After ~31 minutes the binary died, and the kernel
+log gives the mechanism:
+
+```
+__vm_enough_memory: pid: 76643, comm: crispasr, bytes: 123601297408 not enough memory for the allocation
+crispasr[76643]: segfault at 0 ip ... error 4 in crispasr ... signal 11/SEGV
+```
+
+A request for a **123.6 GB** allocation — not gradual growth; resident memory was a healthy
+1.0 GB at the time — refused by the kernel, whose NULL result the binary dereferenced instead of
+handling (frame: `process_one_input`). That is an upstream bug of the unchecked-allocation kind,
+and **`--chunk-seconds` does not prevent it**: this run was chunked from the start.
+
+Two corrections follow, both to my own work:
+
+1. **"Chunked at 300 s peaks at 1.2 GB" (v1.5.2) was not a supported claim.** The measurement
+   that produced it came from a run that was *also* never verified to complete — the earlier
+   20-minute run left no output file either. Memory behaviour was measured; completion was not,
+   and I reported the former as though it settled the latter. **No CrispASR run longer than
+   ~90 seconds has completed on this machine.** Chunking addresses the OOM path (a real, separate
+   failure at 8.3 GB + 4.8 GB swap); it does not address this one.
+2. **The engine's practical envelope here is short files**, which is what the plugin's opt-in
+   status should be read as. The recall advantage on gap regions (59 % vs 33 %, measured on
+   20–45 s clips) stands unchanged; it says nothing about long-form reliability.
+
+Three fixes came out of it, and they generalise to every engine:
+
+- **Name the signal.** `rc=-11` tells a user nothing; `killed by SIGSEGV`, with an explicit note
+  that a crash writes to the kernel log rather than stderr, does.
+- **Read the runner's error event before judging its exit code.** CrispASR's runner exits 1 *after*
+  emitting a precise error, and the backend's early `returncode != 0` check replaced that message
+  with a bare `rc=1`. The other three backends already checked last; this one did not.
+- **Retry once, loudly, rather than returning nothing.** If an engine dies before producing a
+  single cue, the CLI falls back to the engine the hardware policy would have chosen and says so
+  in the status line. Only when zero cues were emitted — partial output must never be silently
+  swapped for a differently-shaped cue list.
+
+Verified end to end with a deliberately crashing engine (a stub that raises SIGSEGV), before and
+after — and the real run's own output matches the "before" exactly, with `free` showing 2.7 GB
+free at the moment of failure, which is what rules memory out:
+
+```
+real:    Transcription failed: CrispASR failed (rc=1):          <- empty tail, no diagnosis
+before:  crispasr (ggml) failed (CrispASR failed (rc=1):); retrying with parakeet (fast)
+after:   crispasr (ggml) failed (CrispASR failed (killed by SIGSEGV): no output on stderr
+         (a crash reports to the kernel log)); retrying with parakeet (fast)
+```
+
 ## Caveats, stated rather than implied
 
-- Not yet measured: diarization quality, the full film through CrispASR on this box (≈34 min
-  without the aligner, ≈2.4 h with it), and any GPU path — there is no usable GPU here.
+- Not yet measured: diarization quality, and any GPU path — there is no usable GPU here.
+- The full film through CrispASR was attempted on 2026-09-17 and **the binary crashed** (see the
+  addendum); the only completed runs are 90 seconds or shorter, so nothing above should be read
+  as a statement about long-form reliability.
 - WER figures in the table are vendor/leaderboard claims, not measurements of ours; the numbers
   from our own material are the throughputs and cue statistics above.
 - Model licences differ (Parakeet CC-BY-4.0, Cohere/Granite Apache-2.0, Canary-Qwen CC-BY-4.0) —
