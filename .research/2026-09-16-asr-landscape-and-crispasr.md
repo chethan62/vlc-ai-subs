@@ -119,6 +119,39 @@ enforces the published cue standards.
    track we compare against carries dialogue dashes in 201 of its 1988 cues (10 %) that we
    produce none of.
 
+## Addendum — the recall measurement, which is the real reason to keep this engine
+
+The aligner claim above did not survive scoring. The engine's actual strength showed up when the
+test was aimed at the plugin's *worst* material instead of at a random window.
+
+Six regions were selected because **our own engine fails them**: stretches where the
+professional track has dialogue and our output has almost none (found by a coverage pass; lyrics
+and on-screen text excluded). Each was extracted (60 s, memory-bounded) and transcribed by
+CrispASR, then both engines were scored on how much of the reference's vocabulary they produced
+in that stretch, in container time:
+
+| region (s) | reference words | our engine | CrispASR |
+| --- | --- | --- | --- |
+| 959 | 91 | 27 % | **53 %** |
+| 7749 | 112 | 71 % | 71 % |
+| 5342 | 54 | **0 %** | **85 %** |
+| 2293 | 66 | 27 % | 32 % |
+| 5292 | 63 | 27 % | **68 %** |
+| 3671 | 41 | **0 %** | **39 %** |
+| **total** | **427** | **139 (33 %)** | **254 (59 %)** |
+
+**How to read this.** The sample was chosen *because* our engine fails it, so it measures the
+size of the gap, not overall accuracy — it is not a claim that CrispASR is 1.8× better in
+general. Six regions and 427 words is a small sample, and word coverage is a bag-of-words proxy
+that ignores order. What it establishes is narrow and useful: **when a line is missing from our
+output, this engine is materially more likely to have it**, and two of these regions are cases
+where we produced nothing at all and it produced 85 % and 39 %.
+
+That is the reason to keep the backend, and it is a different reason from the one v1.5.0 gave.
+The lesson generalises: an engine's advertised feature (here, forced alignment) may measure as
+nothing while the same engine quietly fixes your worst failure mode (recall). Aim the test at
+your own failures, measure both, and let the numbers choose the positioning.
+
 ## Caveats, stated rather than implied
 
 - Not yet measured: diarization quality, the full film through CrispASR on this box (≈34 min

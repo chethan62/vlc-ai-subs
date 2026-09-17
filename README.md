@@ -446,6 +446,13 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
 - **Throughput, measured** on 8 CPU threads with a warm cache: Parakeet **4.2× realtime**
   (~35 min for a 145-minute film), and **2.4×** with the CTC aligner (~61 min). The aligner is
   on by default when a GPU is doing the work and opt-in on CPU — `VSCL_AISUBS_CRISPASR_ALIGN=1`.
+- **Its reason to exist here is recall — measured.** On six regions chosen *because our own
+  engine fails them* (dialogue the professional track has and our output does not), it recovers
+  **59 % of the reference's vocabulary against our 33 %** — 254 words to our 139 — including two
+  regions where we produce nothing at all (0 % → 85 % and 0 % → 39 %). The sample is biased by
+  design: it measures the size of our gap, not overall accuracy, and 427 words is a small
+  sample. But when a line is missing from our output, this engine is materially more likely to
+  have it, and a missing line is the failure a viewer notices.
 - **Its aligner is available and does not fix sync.** It genuinely derives word timings from
   speech instead of the decoder's emission frames, and its cue structure looks plausible
   (median span 2.72 s, no overlaps) — but measured against the professional track over six
