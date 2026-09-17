@@ -109,27 +109,36 @@ def test_the_aligner_flags_are_added_together():
     assert "-falign" in cmd
 
 
-def test_chunking_is_on_by_default():
-    """Measured: a 1200 s input with the aligner peaked at 8.3 GB RSS + 4.8 GB swap and
-    was OOM-killed, against ~300 MB for 90 s of the same material. Ship no-chunking as
-    a default and a feature film takes the machine down."""
-    assert chunk_seconds() == 300
+def test_the_chunk_is_sized_from_available_memory():
+    """Measured ~4 MB of peak per second of audio; the budget is a quarter of
+    MemAvailable, so a transcription cannot push the desktop into the OOM killer
+    (which on this box has already killed Chromium). Unknown RAM = conservative."""
+    assert chunk_seconds(8000) == 500
+    assert chunk_seconds(2000) == 125
+    assert chunk_seconds(400) == 30, "tiny machines clamp to the floor"
+    assert chunk_seconds(0) == 60, "unreadable /proc/meminfo falls back conservatively"
+
+
+def test_the_env_override_still_wins(monkeypatch):
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "600")
+    assert chunk_seconds(8000) == 600
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "5")
+    assert chunk_seconds(8000) == 30, "clamped up"
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "99999")
+    assert chunk_seconds(8000) == 3600, "right: 3600, not the RAM value"
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "0")
+    assert chunk_seconds(8000) == 0, "0 is an explicit opt-out"
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "nonsense")
+    assert chunk_seconds(8000) == 500, "unparseable falls back to the RAM-derived value"
+
+
+def test_chunking_is_on_by_default(monkeypatch):
+    """Measured: a 1200 s input with the aligner peaked at 8.3 GB RSS + 4.8 GB swap
+    (zram here, so real RAM) and was OOM-killed, against ~300 MB for 90 s."""
+    monkeypatch.setattr("core.crispasr_models.available_ram_mb", lambda: 8000)
     cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o",
                         True, None, chunk_seconds())
-    assert cmd[cmd.index("--chunk-seconds") + 1] == "300"
-
-
-def test_the_chunk_size_can_be_tuned_and_is_clamped(monkeypatch):
-    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "600")
-    assert chunk_seconds() == 600
-    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "5")
-    assert chunk_seconds() == 30, "absurdly small values clamp up"
-    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "99999")
-    assert chunk_seconds() == 3600, "and large ones clamp down"
-    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "nonsense")
-    assert chunk_seconds() == 300, "unparseable falls back to the default"
-    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "0")
-    assert chunk_seconds() == 0, "0 is an explicit opt-out"
+    assert cmd[cmd.index("--chunk-seconds") + 1] == "500"
 
 
 def test_no_chunk_flag_when_chunking_is_disabled():

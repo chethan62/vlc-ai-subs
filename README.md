@@ -461,11 +461,14 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   word kept — which is why the two layers stay separate: engine supplies text and timings, the
   plugin enforces the published cue limits.
 - **It has a memory ceiling, and the plugin now respects it.** A 20-minute input with the CTC
-  aligner peaked at **8.3 GB RSS plus 4.8 GB swap and was OOM-killed** on a 15 GB machine,
-  where 90 s of the same material runs in ~300 MB. The runner therefore passes
-  `--chunk-seconds 300` by default (the binary's own advice in that situation): the same
-  20-minute input then peaks at **1.2 GB**. `VSCL_AISUBS_CRISPASR_CHUNK` tunes it; `0` turns
-  chunking off, which is only safe for short files.
+  aligner peaked at **8.3 GB RSS plus 4.8 GB swap and was OOM-killed** on this 15 GB machine,
+  where 90 s of the same material runs in ~300 MB. Worth knowing about this machine: its swap
+  is **zram**, a compressed RAM device — so "using swap" costs real memory, and memory pressure
+  here has already killed a *browser*, not just a job. The runner therefore sizes its work from
+  what the machine can actually spare: `--chunk-seconds` is derived from `MemAvailable` (a
+  quarter of it, at the measured ~4 MB of peak per second of audio, clamped to 30–600 s), so a
+  transcription cannot take the desktop down. `VSCL_AISUBS_CRISPASR_CHUNK` overrides it; `0`
+  turns chunking off, which is only safe for short files on a roomy machine.
 - **Its own engine does gap-fill too.** The log line `crispasr[parakeet]: gap-fill recovered 89
   word(s) the first pass dropped` is the same class of fix this plugin added in v1.4.4,
   arrived at independently — further evidence that a decoder dropping interior words is a real
@@ -521,7 +524,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_CRISPASR_MODEL` | tier tag (`cohere`, `parakeet-1.1b`), a `.gguf` path, or `auto` | smallest (`parakeet-0.6b`) | CrispASR engine — `auto` tiers the model by detected VRAM; the default deliberately does not |
 | `VSCL_AISUBS_CRISPASR_ALIGN` | `1` \| `0` | on with a GPU, off on CPU | CrispASR CTC aligner: real word timings, +72 % runtime on CPU (measured) |
 | `VSCL_AISUBS_CRISPASR_BIN` | path to the `crispasr` binary | `~/.local/share/crispasr/crispasr` | CrispASR engine |
-| `VSCL_AISUBS_CRISPASR_CHUNK` | seconds (30–3600), `0` = no chunking | 300 | CrispASR audio per pass — a 20-minute input without it peaked at 8.3 GB RSS + 4.8 GB swap and was OOM-killed; with it, 1.2 GB |
+| `VSCL_AISUBS_CRISPASR_CHUNK` | seconds, `0` = no chunking | sized from `MemAvailable` (a quarter of it, ~4 MB per second of audio, clamped 30–600 s) | CrispASR audio per pass — a 20-minute input without chunking peaked at 8.3 GB RSS + 4.8 GB swap and was OOM-killed; the sizing keeps a run from pushing the desktop into the OOM killer |
 | `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
 

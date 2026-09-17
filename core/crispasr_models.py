@@ -188,28 +188,59 @@ def model_tag(language: str | None = None, vram_mb: int | None = None) -> str:
     return pick(0, language, forced=env or None).tag
 
 
-def chunk_seconds() -> int:
+def available_ram_mb() -> int:
+    """MemAvailable from /proc/meminfo, in MiB, or 0 when it cannot be read.
+
+    MemAvailable (not MemFree) because it is the kernel's own estimate of what a
+    new workload can take without swapping. On this machine swap is zram — a
+    compressed RAM device (~15 GB of it, 10 GB in use at the time of writing) —
+    so "swapping" costs real memory and memory pressure here has already killed a
+    browser, not just a job. Falling back to 0 means "assume nothing", which
+    makes the callers choose the most conservative setting.
+    """
+    try:
+        with open("/proc/meminfo", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def chunk_seconds(available_mb: int | None = None) -> int:
     """Seconds of audio the binary processes at a time.
 
     Measured on this laptop (15 GB, 8 threads): a 1200 s file with the CTC aligner
-    peaked at **8.3 GB RSS plus 4.8 GB swap and was OOM-killed** after 7 minutes,
-    while 90 s inputs of the same material run in ~300 MB. The binary's own banner
-    offers the remedy: "use --chunk-seconds N if OOM". So this is on by default at
-    300 s rather than left to the caller's memory.
+    peaked at **8.3 GB RSS plus 4.8 GB swap — which here is zram, i.e. real
+    RAM — and was OOM-killed** after 7 minutes, while 90 s inputs run in ~300 MB.
+    The binary's own banner offers the remedy: "use --chunk-seconds N if OOM".
+    The plugin therefore always chunks, and sizes the chunk from what the machine
+    can actually spare.
 
-    VSCL_AISUBS_CRISPASR_CHUNK overrides it (seconds, clamped to 30-3600); a value
-    of 0 means "no chunking", which is only safe for short files.
+    The constant is measured: ~4 MB of peak per second of audio (300 s -> 1.2 GB
+    observed), and the budget is a quarter of MemAvailable — enough headroom that
+    a transcription cannot push the desktop into the OOM killer, which on this
+    box it has already done to Chromium. Clamped to 30-600 s.
+
+    VSCL_AISUBS_CRISPASR_CHUNK overrides all of it (seconds); 0 means "no
+    chunking", which is only safe for short files on a roomy machine.
     """
     raw = os.environ.get("VSCL_AISUBS_CRISPASR_CHUNK", "").strip()
-    if not raw:
-        return 300
-    try:
-        value = int(float(raw))
-    except ValueError:
-        return 300
-    if value == 0:
-        return 0
-    return max(30, min(3600, value))
+    if raw:
+        try:
+            value = int(float(raw))
+        except ValueError:
+            value = -1
+        if value == 0:
+            return 0
+        if value > 0:
+            return max(30, min(3600, value))
+    if available_mb is None:
+        available_mb = available_ram_mb()
+    if available_mb <= 0:
+        return 60                      # unknown machine: the conservative choice
+    return max(30, min(600, int(available_mb * 0.25 / 4)))
 
 
 def model_argument(tag: str) -> str:
