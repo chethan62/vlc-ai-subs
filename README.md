@@ -463,6 +463,13 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   design: it measures the size of our gap, not overall accuracy, and 427 words is a small
   sample. But when a line is missing from our output, this engine is materially more likely to
   have it, and a missing line is the failure a viewer notices.
+- **The counterweight, measured on a whole episode: timing is ours.** On `Lucky.S01E01`
+  (47.5 minutes), scored against its own professional track, CrispASR's cue starts land within
+  0.15 s of a professional cue **27.6 %** of the time at its best offset (+0.15 s) — against our
+  engine's **52.1 %** at zero offset on the same file. So the two engines are good at different
+  things: reach for CrispASR when dialogue is *missing*, keep the default when timing matters. The
+  earlier six-window comparison on the film (CrispASR 45.7 %, ours 42.8 %) had this backwards —
+  windows flattered it, a full episode did not.
 - **Its aligner is available and does not fix sync.** It genuinely derives word timings from
   speech instead of the decoder's emission frames, and its cue structure looks plausible
   (median span 2.72 s, no overlaps) — but measured against the professional track over six
@@ -483,11 +490,16 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   knowing about this machine: its swap is **zram**, a compressed RAM device — so "using swap"
   costs real memory, and memory pressure here has already killed a *browser*, not just a job.
   The runner therefore sizes its work from `MemAvailable` (a quarter of it, at the measured
-  ~4 MB of peak per second of audio, clamped 30–600 s) rather than from a fixed number, so a
-  transcription cannot take the desktop down. `VSCL_AISUBS_CRISPASR_CHUNK` overrides it; `0`
-  turns chunking off, which is only safe for short files on a roomy machine.
-- **Corrected 2026-09-17: it does not finish a feature-length file, and chunking does not fix
-  that.** The earlier claim here — that chunking keeps a long run inside 1.2 GB — came from a run
+  ~4 MB of peak per second of audio, clamped 30–600 s) rather than from a fixed number.
+  `VSCL_AISUBS_CRISPASR_CHUNK` overrides it; `0` turns chunking off, which is only safe for short
+  files on a roomy machine. **But measured 2026-09-17, the `parakeet` backend does not honour it**:
+  on a 47.5-minute file it reports `parakeet backend — full-audio / library-internal streaming`,
+  emits a single `est encoder mem` line for the whole input, and streams it in one pass at ~1.0 GB
+  RSS. So the sizing protects the paths that honour it (the aligned and VAD paths, where the
+  8.3 GB OOM above actually happened) — it is not a guarantee for every engine, and for this one
+  the flag is a no-op.
+- **Corrected 2026-09-17, twice: long runs are unreliable, not impossible, and chunking does not
+  fix that.** The earlier claim here — that chunking keeps a long run inside 1.2 GB — came from a run
   that was never verified to complete. Re-run end to end on 47.5 minutes, the binary **crashed**,
   and the kernel log is unambiguous:
 
@@ -498,9 +510,11 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
 
   A request for a **123.6 GB** allocation, refused by the kernel, whose NULL result was
   dereferenced instead of handled — in `process_one_input`, ~31 minutes in, with memory sitting
-  at a healthy 1.0 GB. This is not gradual growth and chunking does not prevent it: **no CrispASR
-  run longer than ~90 seconds has completed on this machine.** Its long-file support is unproven
-  here rather than merely slow, which is why the engine stays opt-in.
+  at a healthy 1.0 GB. This is not gradual growth. **A later run with identical audio, model and
+  flags completed** — 424 cues in ~33 minutes at ~1.0 GB — printing the *same*
+  `est encoder mem ~154940 MB`, so the estimate is always computed and it is the *use* of it that
+  varies: **the crash is intermittent**, not a property of long files. That is why the engine
+  stays opt-in and the runner warns past 90 s rather than refusing.
 - **A crashed engine no longer leaves you with nothing.** Three fixes came out of that crash: the
   runner names the signal (`killed by SIGSEGV`) instead of printing `rc=-11`; the backend reads
   the runner's error event *before* judging its exit code, instead of replacing a crash diagnosis
@@ -564,7 +578,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_CRISPASR_MODEL` | tier tag (`cohere`, `parakeet-1.1b`), a `.gguf` path, or `auto` | smallest (`parakeet-0.6b`) | CrispASR engine — `auto` tiers the model by detected VRAM; the default deliberately does not |
 | `VSCL_AISUBS_CRISPASR_ALIGN` | `1` \| `0` | on with a GPU, off on CPU | CrispASR CTC aligner: real word timings, +72 % runtime on CPU (measured) |
 | `VSCL_AISUBS_CRISPASR_BIN` | path to the `crispasr` binary | `~/.local/share/crispasr/crispasr` | CrispASR engine |
-| `VSCL_AISUBS_CRISPASR_CHUNK` | seconds, `0` = no chunking | sized from `MemAvailable` (a quarter of it, ~4 MB per second of audio, clamped 30–600 s) | CrispASR audio per pass — a 20-minute input without chunking peaked at 8.3 GB RSS + 4.8 GB swap and was OOM-killed; the sizing keeps a run from pushing the desktop into the OOM killer |
+| `VSCL_AISUBS_CRISPASR_CHUNK` | seconds, `0` = no chunking | sized from `MemAvailable` (a quarter of it, ~4 MB per second of audio, clamped 30–600 s) | CrispASR audio per pass — honoured by the aligned/VAD paths (a 20-minute *aligned* input without it peaked at 8.3 GB RSS + 4.8 GB swap and was OOM-killed). Measured 2026-09-17: the `parakeet` backend ignores it and streams the whole file in one pass |
 | `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
 

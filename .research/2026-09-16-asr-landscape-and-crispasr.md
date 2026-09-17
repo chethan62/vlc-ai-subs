@@ -152,14 +152,25 @@ The lesson generalises: an engine's advertised feature (here, forced alignment) 
 nothing while the same engine quietly fixes your worst failure mode (recall). Aim the test at
 your own failures, measure both, and let the numbers choose the positioning.
 
-## Addendum 2026-09-17 — it crashes on a feature-length file, and my earlier memory claim did not hold
+**But do not over-read it: this engine's recall advantage does not extend to timing.** On a whole
+episode (`Lucky.S01E01`, 47.5 minutes) scored against its own professional track, CrispASR's cue
+starts land within 0.15 s of a professional cue **27.6 %** of the time at its best offset
+(+0.15 s), against this project's own engine at **52.1 %** at zero offset. The six-window
+comparison further up (45.7 % against 42.8 %) had the ordering backwards — 90-second windows
+flattered it. The honest two-axis answer: CrispASR when dialogue is missing, our engine when
+timing matters.
+
+## Addendum 2026-09-17 — long runs crashed once and completed once, and my earlier claim did not hold
 
 Everything above rests on runs of 90 seconds or less. That was not stated as a limitation,
 and it is one.
 
 A full 47.5-minute episode (`Lucky.S01E01`) was run end to end through this backend to get a
-clean-file comparison. **It never finished.** After ~31 minutes the binary died, and the kernel
-log gives the mechanism:
+clean-file comparison. **It died at ~31 minutes** — and a later attempt with identical audio,
+model and flags **completed** in ~33 minutes (424 cues, RSS ~1.0 GB), printing the *same*
+`est encoder mem ~154940 MB`. So the estimate is computed every time; what varies is whether
+anything acts on it unboundedly. **The crash is intermittent.** The kernel log from the failing
+run:
 
 ```
 __vm_enough_memory: pid: 76643, comm: crispasr, bytes: 123601297408 not enough memory for the allocation
@@ -176,9 +187,10 @@ Two corrections follow, both to my own work:
 1. **"Chunked at 300 s peaks at 1.2 GB" (v1.5.2) was not a supported claim.** The measurement
    that produced it came from a run that was *also* never verified to complete — the earlier
    20-minute run left no output file either. Memory behaviour was measured; completion was not,
-   and I reported the former as though it settled the latter. **No CrispASR run longer than
-   ~90 seconds has completed on this machine.** Chunking addresses the OOM path (a real, separate
-   failure at 8.3 GB + 4.8 GB swap); it does not address this one.
+   and I reported the former as though it settled the latter. **One run has since completed**
+   (47.5 minutes, 424 cues, ~33 min, ~1.0 GB) while an identical earlier attempt crashed, so the
+   honest statement is "unreliable past ~90 s", not "impossible". Chunking addresses the OOM path
+   (a real, separate failure at 8.3 GB + 4.8 GB swap); it does not address the segfault.
 2. **The engine's practical envelope here is short files**, which is what the plugin's opt-in
    status should be read as. The recall advantage on gap regions (59 % vs 33 %, measured on
    20–45 s clips) stands unchanged; it says nothing about long-form reliability.
