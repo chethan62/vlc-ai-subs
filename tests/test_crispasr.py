@@ -42,6 +42,18 @@ def test_the_stderr_tail_is_bounded():
     assert len(failure_reason(1, "x" * 4000)) < 600
 
 
+def test_a_long_file_gets_a_warning_before_it_is_transcribed():
+    """The engine segfaults on long files (v1.5.5). Someone who picks it for a film
+    should be told before the run, not 30 minutes later when the fallback starts."""
+    from core.crispasr_models import MAX_VERIFIED_SECONDS, long_run_warning
+
+    assert long_run_warning(90) is None
+    assert long_run_warning(MAX_VERIFIED_SECONDS) is None
+    warning = long_run_warning(47 * 60)
+    assert warning is not None
+    assert "47-minute" in warning
+
+
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for var in ("VSCL_AISUBS_CRISPASR_MODEL", "VSCL_AISUBS_CRISPASR_ALIGN",

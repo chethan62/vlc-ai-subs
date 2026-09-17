@@ -188,6 +188,21 @@ def model_tag(language: str | None = None, vram_mb: int | None = None) -> str:
     return pick(0, language, forced=env or None).tag
 
 
+# ponytail: 90 s is the honest measured envelope (nothing longer has ever completed; a
+# 47.5-minute run segfaulted). It gates a WARNING, not behaviour — retune if a long run
+# ever finishes.
+MAX_VERIFIED_SECONDS = 90
+
+
+def long_run_warning(seconds: float) -> str | None:
+    """A status line to show before transcribing something unverified, or None."""
+    if seconds <= MAX_VERIFIED_SECONDS:
+        return None
+    return (f"CrispASR has never completed a run longer than {MAX_VERIFIED_SECONDS}s "
+            f"on this machine — a {seconds / 60:.0f}-minute file is expected to crash, "
+            f"and another engine will take over if it does")
+
+
 def available_ram_mb() -> int:
     """MemAvailable from /proc/meminfo, in MiB, or 0 when it cannot be read.
 

@@ -506,7 +506,9 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   the runner's error event *before* judging its exit code, instead of replacing a crash diagnosis
   with a bare `rc=1`; and when an engine dies before producing a single cue, the CLI retries once
   with the engine the hardware policy would have chosen — saying so in the status line, never
-  silently:
+  silently. And since a long run is *expected* to fail, the runner says so up front: anything
+  past its verified envelope (90 s — nothing longer has ever completed here) gets a status line
+  before transcription starts, rather than after half an hour.
 - **Its own engine does gap-fill too.** The log line `crispasr[parakeet]: gap-fill recovered 89
   word(s) the first pass dropped` is the same class of fix this plugin added in v1.4.4,
   arrived at independently — further evidence that a decoder dropping interior words is a real
@@ -680,7 +682,7 @@ had been hiding this class of bug.
 ```bash
 cd vlc-ai-subs
 python3 -m venv venv && venv/bin/pip install pytest              # one-time
-PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 310 tests (model-free)
+PYTHONPATH= venv/bin/python -m pytest tests/ -v               # suite: 311 tests (model-free)
 bash tests/install_branches.sh                               # installer branch matrix: 19 checks
 ```
 

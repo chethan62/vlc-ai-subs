@@ -26,8 +26,8 @@ import time
 from core.audio import (choose_audio_stream, cleanup_temp, decode_to_wav16k,
                         list_audio_streams)
 from core.crispasr_models import (INSTALL_HINT, align_enabled, binary,
-                                  chunk_seconds, model_argument, model_for,
-                                  model_tag)
+                                  chunk_seconds, long_run_warning,
+                                  model_argument, model_for, model_tag)
 from core.cues import apply_quality
 from core.procs import install_termination_handler
 from core.srt import write_srt
@@ -168,6 +168,10 @@ def main():
         emit({"type": "status", "msg": f"Audio track: {why}"})
     emit({"type": "status", "msg": f"CrispASR: decoding audio (+{time.time()-t0:.0f}s)"})
     wav_path = decode_to_wav16k(media_path, stream_index=stream_index)
+    # 16 kHz mono 16-bit = 32 kB/s; the 44-byte header is 1.4 ms.
+    warning = long_run_warning(os.path.getsize(wav_path) / 32000)
+    if warning:
+        emit({"type": "status", "msg": warning})
 
     out_base = os.path.join(tempfile.gettempdir(), f"aisubs_crispasr_{os.getpid()}")
     try:

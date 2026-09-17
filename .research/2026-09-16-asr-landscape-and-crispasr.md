@@ -195,6 +195,15 @@ Three fixes came out of it, and they generalise to every engine:
   in the status line. Only when zero cues were emitted — partial output must never be silently
   swapped for a differently-shaped cue list.
 
+**Upgrade path, when upstream fixes the crash** (from its own docs, not measured): the binary has
+a server mode — `crispasr --server` — that loads the model **once** and takes bounded requests via
+`offset_t_ms` / `duration_ms`. That is the right shape for long media: our current chunking
+restarts the process per chunk (~419 s each, measured 31 minutes to get nowhere on a 47.5-minute
+file), while the server would chunk in-process with no reload. Not implemented deliberately —
+the engine cannot complete a long file at all yet, so speeding that path up is premature. Its
+troubleshooting page classifies our exit as `139` = "a genuine bug — please report it", which is
+where the real fix has to come from.
+
 Verified end to end with a deliberately crashing engine (a stub that raises SIGSEGV), before and
 after — and the real run's own output matches the "before" exactly, with `free` showing 2.7 GB
 free at the moment of failure, which is what rules memory out:
