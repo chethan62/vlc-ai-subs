@@ -78,8 +78,25 @@ quality decision rather than a budget one.
 
 **3. The aligner fixes the thing we could not.** With `-am` + `-falign` + `-sp`: 25 cues for the
 90 s, median span 2.72 s, **0 overlaps**, 2 cues over 7 s. The recovered line lands at
-`47.60 → 50.96` — 3.36 s for 7 words, ≈125 wpm, which is plausible speech — where our own
-timestamps for the same audio are compressed towards the emission times.
+`47.60 → 50.96` — 3.36 s for 7 words, ≈125 wpm, which is plausible speech.
+
+**3b. …and that was an assumption, not a measurement. Withdrawn.** Plausible-looking cue
+structure is not sync. Scored against the reference track over six 90-second windows spread
+across the film, at each window's best global offset, within 0.15 s:
+
+| engine | cues | fit hits | rate |
+| --- | --- | --- | --- |
+| this plugin's existing engine (`film6`) | 159 | 68 | **42.8 %** |
+| CrispASR, no aligner | 129 | 59 | **45.7 %** |
+| CrispASR + CTC aligner | 129 | 58 | **45.0 %** |
+
+The aligner does not improve sync — it is a fraction worse, inside noise — and neither engine
+separates from the other. Per window the aligner won one, tied two and lost three. The claim
+that alignment was "the one timing defect that survived VAD-onset snapping and cue
+redistribution" was written *before* this test; the honest statement is that the aligner
+produces timings from speech, that its cues look structurally sound, and that **no improvement
+in alignment with professional timings has been demonstrated**. It stays available (free on a
+GPU) and is not recommended on CPU, where it costs +72 % for no measured gain.
 
 **4. It composes with our quality pass.** CrispASR's `-sp` splits at punctuation but does not
 wrap, so raw output had **8 lines over 42 chars (longest 76)**. Running the existing

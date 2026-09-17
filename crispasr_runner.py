@@ -25,7 +25,8 @@ import time
 from core.audio import (choose_audio_stream, cleanup_temp, decode_to_wav16k,
                         list_audio_streams)
 from core.crispasr_models import (INSTALL_HINT, align_enabled, binary,
-                                  model_argument, model_for, model_tag)
+                                  chunk_seconds, model_argument, model_for,
+                                  model_tag)
 from core.cues import apply_quality
 from core.procs import install_termination_handler
 from core.srt import write_srt
@@ -62,7 +63,7 @@ def parse_srt(path: str) -> list:
 
 def build_command(bin_path: str, wav_path: str, model_arg: str, backend: str,
                   language: str | None, out_base: str, align: bool,
-                  device: str | None) -> list:
+                  device: str | None, chunk: int = 0) -> list:
     """The crispasr invocation, with the flags that decide quality and cost.
 
     * `-m` is `auto` for a backend's default model, or an explicit name/quant for
@@ -78,11 +79,17 @@ def build_command(bin_path: str, wav_path: str, model_arg: str, backend: str,
       and silently uses the CPU when the driver is absent, which is how one
       install scales from a CPU laptop to a GPU box. `device=cpu` asks for the
       whisper.cpp-compatible `-ng` instead.
+    * `--chunk-seconds` unless the caller asked for 0: a 1200 s input with the
+      aligner measured 8.3 GB RSS + 4.8 GB swap and an OOM kill, against ~300 MB
+      for 90 s of the same material. Without it a feature film takes the machine
+      down (see core/crispasr_models.chunk_seconds).
     """
     cmd = [bin_path, "--backend", backend, "-m", model_arg,
            "-f", wav_path, "-l", language or "auto",
            "-sp", "-osrt", "-of", out_base,
            "-t", str(min(8, os.cpu_count() or 2))]
+    if chunk:
+        cmd += ["--chunk-seconds", str(chunk)]
     if align:
         cmd += ["-am", "auto", "-falign"]
     if device == "cpu":
@@ -141,7 +148,7 @@ def main():
     out_base = os.path.join(tempfile.gettempdir(), f"aisubs_crispasr_{os.getpid()}")
     try:
         cmd = build_command(bin_path, wav_path, model_argument(tag), model.backend,
-                            language, out_base, align, device)
+                            language, out_base, align, device, chunk_seconds())
         if _debug_enabled():
             emit({"type": "status", "msg": f"CrispASR: {' '.join(cmd)}"})
         emit({"type": "status", "msg": "Transcribing..."})

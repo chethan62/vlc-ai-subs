@@ -446,15 +446,30 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
 - **Throughput, measured** on 8 CPU threads with a warm cache: Parakeet **4.2× realtime**
   (~35 min for a 145-minute film), and **2.4×** with the CTC aligner (~61 min). The aligner is
   on by default when a GPU is doing the work and opt-in on CPU — `VSCL_AISUBS_CRISPASR_ALIGN=1`.
-- **The aligner is the reason to have this engine.** It derives word timings from speech rather
-  than from the decoder's emission frames — the one timing defect that survived VAD-onset
-  snapping (a measured no-op) and cue redistribution. On the 90 s of the test film where this
-  plugin's Parakeet path silently drops a passage, CrispASR returns it intact and
-  sentence-split, with 0 overlaps.
+- **Its aligner is available and does not fix sync.** It genuinely derives word timings from
+  speech instead of the decoder's emission frames, and its cue structure looks plausible
+  (median span 2.72 s, no overlaps) — but measured against the professional track over six
+  90-second windows, scored at each's best global offset: **45.0 % of its cues land within
+  0.15 s of a reference cue with the aligner, and 45.7 % without it.** Our existing engine
+  scores 42.8 % on the same windows. So the aligner is a real capability with no measured
+  benefit for subtitle sync, and the plugin does not recommend it: on by default when a GPU is
+  doing the work (it is nearly free there), opt-in on CPU where it costs +72 % for nothing.
+  The earlier claim in these notes that alignment was "the one timing defect that survived" was
+  written before this measurement — it is withdrawn.
 - **Its output is not standards-compliant on its own** (8 lines over 42 chars and 2 cues over
   7 s in those 90 s). The plugin's own `apply_quality` pass takes that to 0 and 0 with every
   word kept — which is why the two layers stay separate: engine supplies text and timings, the
   plugin enforces the published cue limits.
+- **It has a memory ceiling, and the plugin now respects it.** A 20-minute input with the CTC
+  aligner peaked at **8.3 GB RSS plus 4.8 GB swap and was OOM-killed** on a 15 GB machine,
+  where 90 s of the same material runs in ~300 MB. The runner therefore passes
+  `--chunk-seconds 300` by default (the binary's own advice in that situation): the same
+  20-minute input then peaks at **1.2 GB**. `VSCL_AISUBS_CRISPASR_CHUNK` tunes it; `0` turns
+  chunking off, which is only safe for short files.
+- **Its own engine does gap-fill too.** The log line `crispasr[parakeet]: gap-fill recovered 89
+  word(s) the first pass dropped` is the same class of fix this plugin added in v1.4.4,
+  arrived at independently — further evidence that a decoder dropping interior words is a real
+  failure mode rather than a quirk of one runtime.
 - **Diarization is available in the engine and deliberately not used here.** It was measured
   against the professional track's dialogue dashes (the ground truth for speaker changes) and
   failed: on the densest dash window it flagged 6 of 16 real speaker changes within 0.7 s
@@ -506,6 +521,7 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_CRISPASR_MODEL` | tier tag (`cohere`, `parakeet-1.1b`), a `.gguf` path, or `auto` | smallest (`parakeet-0.6b`) | CrispASR engine — `auto` tiers the model by detected VRAM; the default deliberately does not |
 | `VSCL_AISUBS_CRISPASR_ALIGN` | `1` \| `0` | on with a GPU, off on CPU | CrispASR CTC aligner: real word timings, +72 % runtime on CPU (measured) |
 | `VSCL_AISUBS_CRISPASR_BIN` | path to the `crispasr` binary | `~/.local/share/crispasr/crispasr` | CrispASR engine |
+| `VSCL_AISUBS_CRISPASR_CHUNK` | seconds (30–3600), `0` = no chunking | 300 | CrispASR audio per pass — a 20-minute input without it peaked at 8.3 GB RSS + 4.8 GB swap and was OOM-killed; with it, 1.2 GB |
 | `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
 

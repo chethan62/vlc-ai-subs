@@ -188,6 +188,30 @@ def model_tag(language: str | None = None, vram_mb: int | None = None) -> str:
     return pick(0, language, forced=env or None).tag
 
 
+def chunk_seconds() -> int:
+    """Seconds of audio the binary processes at a time.
+
+    Measured on this laptop (15 GB, 8 threads): a 1200 s file with the CTC aligner
+    peaked at **8.3 GB RSS plus 4.8 GB swap and was OOM-killed** after 7 minutes,
+    while 90 s inputs of the same material run in ~300 MB. The binary's own banner
+    offers the remedy: "use --chunk-seconds N if OOM". So this is on by default at
+    300 s rather than left to the caller's memory.
+
+    VSCL_AISUBS_CRISPASR_CHUNK overrides it (seconds, clamped to 30-3600); a value
+    of 0 means "no chunking", which is only safe for short files.
+    """
+    raw = os.environ.get("VSCL_AISUBS_CRISPASR_CHUNK", "").strip()
+    if not raw:
+        return 300
+    try:
+        value = int(float(raw))
+    except ValueError:
+        return 300
+    if value == 0:
+        return 0
+    return max(30, min(3600, value))
+
+
 def model_argument(tag: str) -> str:
     """The value to pass as the binary's `-m`.
 

@@ -7,15 +7,15 @@ facts behind them are in `.research/2026-09-16-asr-landscape-and-crispasr.md`.
 
 import pytest
 
-from core.crispasr_models import (MODELS, align_enabled, binary, model_argument,
-                                  model_label, model_tag, pick)
+from core.crispasr_models import (MODELS, align_enabled, binary, chunk_seconds,
+                                  model_argument, model_label, model_tag, pick)
 from crispasr_runner import build_command, parse_srt
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for var in ("VSCL_AISUBS_CRISPASR_MODEL", "VSCL_AISUBS_CRISPASR_ALIGN",
-                "VSCL_AISUBS_CRISPASR_BIN"):
+                "VSCL_AISUBS_CRISPASR_BIN", "VSCL_AISUBS_CRISPASR_CHUNK"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -107,6 +107,35 @@ def test_the_aligner_flags_are_added_together():
     cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o", True, None)
     assert cmd[cmd.index("-am") + 1] == "auto"
     assert "-falign" in cmd
+
+
+def test_chunking_is_on_by_default():
+    """Measured: a 1200 s input with the aligner peaked at 8.3 GB RSS + 4.8 GB swap and
+    was OOM-killed, against ~300 MB for 90 s of the same material. Ship no-chunking as
+    a default and a feature film takes the machine down."""
+    assert chunk_seconds() == 300
+    cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o",
+                        True, None, chunk_seconds())
+    assert cmd[cmd.index("--chunk-seconds") + 1] == "300"
+
+
+def test_the_chunk_size_can_be_tuned_and_is_clamped(monkeypatch):
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "600")
+    assert chunk_seconds() == 600
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "5")
+    assert chunk_seconds() == 30, "absurdly small values clamp up"
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "99999")
+    assert chunk_seconds() == 3600, "and large ones clamp down"
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "nonsense")
+    assert chunk_seconds() == 300, "unparseable falls back to the default"
+    monkeypatch.setenv("VSCL_AISUBS_CRISPASR_CHUNK", "0")
+    assert chunk_seconds() == 0, "0 is an explicit opt-out"
+
+
+def test_no_chunk_flag_when_chunking_is_disabled():
+    cmd = build_command("/bin/crispasr", "a.wav", "auto", "parakeet", "en", "/tmp/o",
+                        False, None, 0)
+    assert "--chunk-seconds" not in cmd
 
 
 def test_parse_srt_reads_cues(tmp_path):
