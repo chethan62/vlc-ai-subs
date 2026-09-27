@@ -567,7 +567,7 @@ weakest case is exactly where films are hardest:
 | whisper.cpp `small.en`, CPU | 4.64× |
 
 ```bash
-./install-photon-model.sh          # its own venv (~1.7 GB, CPU PyTorch); opt-in
+./install-photon-model.sh          # its own venv (1.6 GB measured, CPU PyTorch); opt-in
 VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
 ```
 
