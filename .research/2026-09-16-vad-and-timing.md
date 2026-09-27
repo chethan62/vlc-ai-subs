@@ -138,6 +138,39 @@ So the honest version of this finding:
   It also makes a caption linger over its final word's audio instead of vanishing a frame
   after its start.
 
+## The whole-film threshold sweep, and why it is NOT lowered (2026-09-27)
+
+Re-run on the `Lucky.2026.S01E01…NeoNoir` release on disk (47.5 min, decoded to 16 kHz mono). The
+threshold passes straight through to sherpa-onnx (`speech_spans(threshold=…)`), so the whole film
+can be swept — one pass costs 13 s.
+
+| threshold | passes as speech | short exclamations found (5 sampled) |
+| --- | --- | --- |
+| **0.40 (shipped)** | 13.0 min (27 %) | **0 / 5** |
+| 0.25 | 17.8 min (37 %) | 1 / 5 |
+| 0.15 | 32.5 min (68 %) | 3 / 5 |
+| 0.10 | 34.0 min (72 %) | 4 / 5 |
+
+For reference the film's own tracks cover 32.5 % of the runtime (main English, 428 cues) and 40.6 %
+(SDH, 556 cues) — so 0.15–0.10 makes the detector agree with a professional subtitler about how
+much of the audio is subtitle-worthy. That agreement is the problem: it includes the score.
+
+Two measurements fix the value:
+
+1. **The misses are not dialogue scenes.** The 41 professional cues our transcript does not cover at
+   all (231 words) are 1–2 s exclamations over music or action — "Stop now!", "Fuck.", "Alley-oop.",
+   "Three, two, one." Feeding those spans to Parakeet *standalone* returns them cleanly (→ "Stop
+   now!", verbatim against the professional cue), so the model can hear them. The detector at 0.4
+   does not call them speech, so the hole-filler never looks.
+2. **The cure is worse than the disease.** At 0.15 the filler would be handed most of the film as
+   "uncovered speech" and would paste the score into the subtitle file as lyrics — the behaviour
+   this backend refuses (`whisper.cpp` calls the same audio `(upbeat music)`), and the reason the
+   gate was withdrawn in v1.4.3.
+
+The gap therefore stays documented rather than closed: `VAD_THRESHOLD` keeps 0.4 and `core/vad.py`
+carries the table next to it. Closing it needs a *second* signal — a music/speech classifier or an
+on-screen-text detector — not a lower speech threshold.
+
 ## Song lyrics and italics: VLC's support verified from source
 
 [measured: `videolan/vlc`, `modules/codec/subsdec.c`, 3.0.x] The SubRip decoder's tag

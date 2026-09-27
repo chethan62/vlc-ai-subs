@@ -456,20 +456,33 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
 - **Throughput, measured** on 8 CPU threads with a warm cache: Parakeet **4.2× realtime**
   (~35 min for a 145-minute film), and **2.4×** with the CTC aligner (~61 min). The aligner is
   on by default when a GPU is doing the work and opt-in on CPU — `VSCL_AISUBS_CRISPASR_ALIGN=1`.
-- **Its reason to exist here is recall — measured.** On six regions chosen *because our own
-  engine fails them* (dialogue the professional track has and our output does not), it recovers
-  **59 % of the reference's vocabulary against our 33 %** — 254 words to our 139 — including two
-  regions where we produce nothing at all (0 % → 85 % and 0 % → 39 %). The sample is biased by
-  design: it measures the size of our gap, not overall accuracy, and 427 words is a small
-  sample. But when a line is missing from our output, this engine is materially more likely to
-  have it, and a missing line is the failure a viewer notices.
+- **Its reason to exist here is recall — and what it "recalls", measured, is mostly song.** On six
+  regions chosen *because our own engine fails them* (dialogue the reference track has and our
+  output does not), it recovers **59 % of the reference's vocabulary against our 33 %** — 254 words
+  to our 139 — including two regions where we produce nothing at all (0 % → 85 % and 0 % → 39 %).
+  **Then those six regions were handed to the VAD** (2026-09-27): five of them are **0.00 s of
+  detected speech** at the shipped threshold. The missing content is singing, on-screen text and
+  music — the things a whisper-family engine transcribes as lyrics, and that the hardened
+  whisper.cpp path in this same repo calls `(upbeat music)`. So the honest reading is narrower than
+  "recall": this engine is better at *naming the parts of a soundtrack that subtitling either
+  lyrics-annotates or leaves out*, and worse at timing. It does not contradict this plugin's design
+  intent: it transcribes dialogue and refuses to invent lyrics.
 - **The counterweight, measured on a whole episode: timing is ours.** On `Lucky.S01E01`
   (47.5 minutes), scored against its own professional track, CrispASR's cue starts land within
   0.15 s of a professional cue **27.6 %** of the time at its best offset (+0.15 s) — against our
-  engine's **52.1 %** at zero offset on the same file. So the two engines are good at different
-  things: reach for CrispASR when dialogue is *missing*, keep the default when timing matters. The
-  earlier six-window comparison on the film (CrispASR 45.7 %, ours 42.8 %) had this backwards —
-  windows flattered it, a full episode did not.
+  engine's **52.1 %** at zero offset on the same file. Reach for CrispASR when the missing content
+  is lyrics or on-screen text; keep the default when timing matters. The earlier six-window
+  comparison on the film (CrispASR 45.7 %, ours 42.8 %) had this backwards — windows flattered it,
+  a full episode did not.
+- **What our own recall actually looks like (2026-09-27, same 47.5-min episode).** Against the
+  film's main English track: the professional file has **428 cues / 2 907 words** covering 32.5 % of
+  the runtime; our Parakeet run produced **453 cues / 2 408 words** covering 31.1 % — *more cues*,
+  83 % of the words. The remaining gap is **41 cues / 231 words** we do not cover at all, and they
+  are **1–2 s exclamations over music or action** ("Stop now!", "Fuck.", "Alley-oop.", a countdown),
+  not dialogue scenes. Why they stay missing is measured, not guessed: the VAD flags 0 of 5 sampled
+  and recovering them needs a threshold that calls **68 % of the film speech** (0.15), which would
+  paste the score into the subtitles as lyrics. `core/vad.py` carries the sweep and the reasoning;
+  the trade is documented rather than taken.
 - **Its aligner is available and does not fix sync.** It genuinely derives word timings from
   speech instead of the decoder's emission frames, and its cue structure looks plausible
   (median span 2.72 s, no overlaps) — but measured against the professional track over six

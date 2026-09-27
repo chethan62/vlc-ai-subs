@@ -46,6 +46,23 @@ SAMPLE_RATE = 16000
 # 0.4 is the strongest threshold that still skips every music chunk while decoding every
 # chunk holding dialogue: 1/3 == the genuinely silent opening chunk, which the reference
 # track agrees has nothing before 47 s.
+#
+# The whole-film sweep (measured 2026-09-27, 47.5-min episode, `VAD_THRESHOLD` passed
+# through `speech_spans(threshold=…)`) is why this number is NOT lowered even though a lower
+# one recovers more dialogue:
+#
+#   threshold   passes as speech    short exclamations found (5 sampled)
+#   0.40        13.0 min (27%)      0/5
+#   0.25        17.8 min (37%)      1/5
+#   0.15        32.5 min (68%)      3/5
+#   0.10        34.0 min (72%)      4/5
+#
+# The misses are 1-2 s shouts over music/action ("Stop now!", "Fuck.", "Alley-oop."), which
+# a professional subtitler marks because they can see the picture. Recovering them costs
+# naming most of the film speech — and the hole-filler would then decode the score and paste
+# lyrics into the user's subtitles, which is the one thing this backend refuses to invent.
+# At 0.4 the film's dialogue is covered; the rest of the gap is documented, not taken.
+# See `.research/2026-09-16-vad-and-timing.md` (whole-film sweep) and the recall note.
 VAD_THRESHOLD = 0.4
 
 # Values of VSCL_AISUBS_VAD_MODEL that switch the VAD off entirely, for A/B testing and for

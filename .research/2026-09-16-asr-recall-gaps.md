@@ -9,6 +9,15 @@ invisible in every output the plugin produces.
 The film's professional track holds **11 549 words**; our transcript of the same film has
 **10 089**. Auditing every professional cue for whether our overlapping cues contain its words:
 
+> **Provenance caveat added 2026-09-27:** those two figures cannot be reproduced from the
+> `Lucky.2026.S01E01…NeoNoir` release in `~/Downloads` — its three English tracks hold 428 / 433 /
+> 556 cues and 6 759 / 6 836 / 8 325 words, and the quoted line below ("You have the gift, but no
+> control.") appears in **none** of them. The numbers above came from a different edition or an
+> external subtitle file that was not recorded here. Treat the *ratios* below as sound (they were
+> audited cue by cue) and the absolute counts as belonging to an unnamed source. The reproducible
+> numbers from the release on disk are in the README's CrispASR section and
+> `.research/2026-09-16-vad-and-timing.md`.
+
 | | count |
 | --- | --- |
 | professional cues we do not cover (< half their words present) | 302 |
