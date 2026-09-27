@@ -594,6 +594,11 @@ VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
 - **Options:** `VSCL_AISUBS_PHOTON_MODEL=redux|ultra|<hf-repo-id>` (`ultra` is
   385 MB), `VSCL_AISUBS_PHOTON_VENV=<dir>` for a venv kept elsewhere,
   `VSCL_AISUBS_PHOTON=1` also installs it from `install.sh`.
+- **Every number above names its conditions, and they matter more than they
+  sound.** The same plugin run measured **5.2×** — not 14× — on a 3-minute excerpt
+  taken while this laptop sat at 93 °C with a load average of 9 (its CPU
+  power-caps: measured 2.3× slower hot than cool). Time transcription on an idle
+  machine or don't quote the number.
 - **Length is unmeasured here.** The longest verification is a 3-minute real
   excerpt (47 cues, no overlaps, the correct English track chosen from three).
   Photon self-segments with its own VAD and needs no chunk plan, so its peak
