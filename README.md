@@ -586,8 +586,14 @@ VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
   replacement for the Parakeet engine above.
 - **Two unrelated runtimes agree with it.** whisper.cpp's own ggml Parakeet
   runtime, driven directly, reproduces Photon's text for the test fixture
-  word-for-word — the same weights behave the same way in a different engine,
-  which is why the speed here reads as the kernel and not as a quirk.
+  word-for-word — the same weights behave the same way in a different engine.
+- **And the speed is the kernel, not the 178 MB.** Running that same ggml runtime
+  with progressively smaller weights of the same model (measured in one quiet
+  window on this laptop): q8_0 **669 MB → 4.87×**, q4_k **415 MB → 6.21×**, q4_0
+  **355 MB → 6.30×**. Halving the file buys 29 %; Redux is **2.2×** the fastest of
+  them, and the size trend explains at most ~1.3× of that. So "use the open
+  runtime with a small quant instead" does not get you this speed on a CPU —
+  which is the honest reason to weigh the proprietary runtime at all.
 - **English is the only measured language.** Redux re-quantises the 25-language
   v3 model, so the others may well work; a run in one of them says "untested" in
   the status line instead of claiming coverage.
