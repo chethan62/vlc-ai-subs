@@ -70,6 +70,7 @@ local ENGINES = {
     { "parakeet",   "Parakeet (fastest; v2 English / v3 25 languages)" },
     { "whispercpp", "whisper.cpp (Vulkan - AMD/Intel GPUs)" },
     { "crispasr",   "CrispASR (ggml: Parakeet/Cohere/Canary by VRAM)" },
+    { "photon",     "Photon (Parakeet Redux - fastest on CPU, English)" },
 }
 local MODELS = {
     { "recommended",    "Recommended (auto)" },
@@ -338,6 +339,10 @@ function engine_for(engine, language, task)
         -- CrispASR's --translate is whisper-only; every other backend transcribes.
         return "whisperx", "CrispASR cannot translate - using WhisperX"
     end
+    if engine == "photon" and task == "translate" then
+        -- Photon has no translation head at all (it is an ASR model).
+        return "whisperx", "Photon cannot translate - using WhisperX"
+    end
     return engine, nil
 end
 
@@ -346,6 +351,7 @@ function engine_label(engine)
     if engine == "parakeet" then return "Parakeet" end
     if engine == "whispercpp" then return "whisper.cpp" end
     if engine == "crispasr" then return "CrispASR" end
+    if engine == "photon" then return "Photon" end
     if engine == "auto" then return "Auto" end
     return "WhisperX"
 end
@@ -827,9 +833,12 @@ function start_generation()
     -- Auto/Parakeet resolve to an engine that can actually do this run (Parakeet
     -- has no translation and no detection); engine_note explains a substitution.
     local engine, engine_note = engine_for(engine_choice, language, task)
-    -- Parakeet ignores the model dropdown (fixed parakeet-tdt-0.6b-v2);
-    -- show the model that actually runs in the status lines.
-    local shown_model = (engine == "parakeet") and "parakeet-tdt-0.6b-v2" or model
+    -- Parakeet and Photon ignore the model dropdown (fixed weights: Parakeet's
+    -- variant follows the language, Photon's comes from
+    -- VSCL_AISUBS_PHOTON_MODEL), so show the model that actually runs instead of
+    -- a WhisperX size name that has nothing to do with the engine.
+    local fixed_model = { parakeet = "parakeet-tdt-0.6b-v2", photon = "parakeet-redux" }
+    local shown_model = fixed_model[engine] or model
     -- Remember the dialog choices (not the substitution) for the next session.
     save_settings({
         engine = engine_choice, model = model, language = language,
