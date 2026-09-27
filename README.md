@@ -605,6 +605,17 @@ VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
   taken while this laptop sat at 93 °C with a load average of 9 (its CPU
   power-caps: measured 2.3× slower hot than cool). Time transcription on an idle
   machine or don't quote the number.
+- **On real film audio the margin over the engine it would replace is ~1.3×, not
+  1.9×.** Same 183.6 s English track (a real episode excerpt with music and
+  overlapping dialogue), same quiet box, transcribe time only: this plugin's Photon
+  engine **9.25× / 9.92×** (two runs, load 1.81, 66 °C) against sherpa-onnx int8
+  chunked **7.45×** (load 1.65, 68 °C). The 125 s fixture in the table above is
+  synthetic read speech repeated twelve times and it flatters Photon more than it
+  flatters sherpa, whose figure is **7.46× on the fixture and 7.45× here** — it does
+  not care what the audio is, while Photon loses a third of its throughput on real
+  material. So the honest case is a ~29 % speed win on dialogue, weighed against a
+  proprietary runtime and a model that degrades faster in noise: reach for it for
+  clean speech and drafts, not as the film default.
 - **Length is unmeasured here.** The longest verification is a 3-minute real
   excerpt (47 cues, no overlaps, the correct English track chosen from three).
   Photon self-segments with its own VAD and needs no chunk plan, so its peak
