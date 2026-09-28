@@ -186,6 +186,35 @@ The dialog now asks for the autoselect and reports what actually happened:
 "Subtitles loaded." only when a subtitle track really is selected, otherwise
 "SRT: <path> — choose it under Subtitles".
 
+## How the dialog follows a run (VLC 3.x gives extensions no timer)
+
+The dialog used to poll the run's mirror file from a `vlc.timer`. In a real VLC
+3.0.23 an extension has no such object: `vlc.timer(...)` raised
+`attempt to call field 'timer' (a nil value)` and aborted the launch, and
+`vlc.var` offers no `add_callback` either. VLC's own
+`modules/lua/extension.c` opens a fixed library list for an extension's Lua state
+(`msg config dialog input object osd playlist sd stream strings variables video
+vlm volume xml io errno`) — there is no timer library — so **an extension cannot
+schedule anything**, in 3.0 or in 4.0-dev.
+
+Both consequences are stated in the dialog instead of being left silent:
+
+- **Generate & Load SRT** — the run still launches in the background and writes
+  `<media>.srt`. The dialog cannot notice it finishing, so a **Load SRT** button
+  does the tick by hand: it reads the mirror file, updates the status/ETA/cue
+  lines, and loads the subtitles once the run is done. It is a no-op while a run
+  is still going, and a second click after a finished run says so.
+- **Real-time OSD** — that mode *is* paced by the ticks, so on a build with no
+  timer it cannot work; the dialog says exactly that instead of queueing cues
+  that never reach the screen.
+
+Verified end to end in a real VLC 3.0.23 (2026-09-28): extension dialog → Generate
+(Photon engine, 40 s clip of a real episode) → 15 cues in 26 s → Load SRT →
+`[AI Subs] Loaded: /tmp/vlc_test40.srt` in VLC's log, dialog status
+"Done! 15 segments. Subtitles loaded.", and OCR of the video window read the
+captions back off the picture (`At what hour do you expect him?`,
+`Are you Sergeant Stewart's wife?`, `Bernadette.`, … matching the SRT).
+
 ## Real-time OSD
 
 OSD mode used to push each cue the moment the transcription produced it. Nothing
@@ -678,7 +707,8 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 ## Architecture
 
 ```
-aisubs.lua                   VLC extension (dialog + timer polling)
+aisubs.lua                   VLC extension (dialog + poll ticks: timer where VLC
+                             offers one, the Load SRT button on VLC 3.x)
 aisubs_whisper.py            CLI entry-point (args → backend → JSONL → SRT)
 whisperx_runner.py           WhisperX inside the Python 3.12 venv (subprocess)
 parakeet_runner.py           Parakeet TDT via sherpa-onnx (same JSONL contract)
@@ -883,16 +913,19 @@ The extension removes the mirror, the temp SRT and the pid file afterwards.
 - **Language** — `auto` for detection, or a code like `en`, `es`, `fr`, `hi`, `ja`, `zh`, `en-US`, etc.
 - **Task** — `Translate to English` (default) or `Transcribe (same language)`.
 - **Mode** — `Generate & Load SRT` (default) or `Real-time OSD`.
+- **Load SRT** — loads the subtitles a finished run produced (VLC 3.x gives
+  extensions no timer, so the dialog cannot do it on its own; see
+  [How the dialog follows a run](#how-the-dialog-follows-a-run-vlc-3x-gives-extensions-no-timer)).
 - **Failures read as one line** — a backend error is shown as a short, actionable
   status (`… | Out of GPU memory (VLC itself holds some): close other video
   windows, choose a smaller model, or use Parakeet`), while the full traceback goes
   to VLC's log and `/tmp/aisubs_debug.log`. It used to paste the entire
   stderr/stdout — measured at ~4 KB of warnings — into the status label.
-- **Closing the dialog mid-run is safe** — it cancels the progress timer (VLC
-  keeps calling a live timer after the dialog is deleted, and the callback then
-  indexed the removed progress bar: `attempt to index upvalue 'progress_bar' (a
-  nil value)`, seen in a real run) and the transcription still finishes, writing
-  its SRT.
+- **Closing the dialog mid-run is safe** — it drops the widget references and the
+  poll tick (VLC keeps calling a live timer after the dialog is deleted, and the
+  callback then indexed the removed progress bar: `attempt to index upvalue
+  'progress_bar' (a nil value)`, seen in a real run) and the transcription still
+  finishes, writing its SRT.
 - **Cancel** — stops the run (its process tree, including the model subprocess); starting a new run cancels the previous one.
 - **Remembered settings** — engine/model/language/task/mode are stored in `<vlc user data dir>/vlc-ai-subs/settings.conf` and restored next session; the details pane shows the engine, model, elapsed, ETA and cue count, plus the latest transcribed cue.
 

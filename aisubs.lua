@@ -38,10 +38,11 @@ function descriptor()
         version = "3.4",
         author = "chethan62",
         url = "https://github.com/chethan62/vlc-ai-subs",
-        shortdesc = "AI subtitle generator (WhisperX/Parakeet)",
+        shortdesc = "AI subtitle generator (5 engines: WhisperX/Parakeet/CrispASR/Photon)",
         description = "Generate subtitles using local AI. "
-            .. "WhisperX (multilingual), Parakeet (v2 English / v3 25 languages) "
-            .. "or whisper.cpp (Vulkan). "
+            .. "WhisperX (multilingual), Parakeet (v2 English / v3 25 languages), "
+            .. "whisper.cpp (Vulkan), CrispASR (ggml, by VRAM) or Photon "
+            .. "(Parakeet Redux, fastest on CPU). "
             .. "Real-time OSD or generate-and-load SRT. "
             .. "Compatible with VLC 3.x (4.x: same Lua API).",
         capabilities = {"menu"},
@@ -98,6 +99,8 @@ local _poll_mode     = nil
 local _poll_model    = nil
 local _poll_engine   = nil
 local _poll_tmr      = nil
+local _poll_obj      = nil  -- the input object the "time" callback is on
+local _poll_start    = nil  -- os.time() when polling began (tick-delay-free elapsed)
 local _poll_secs     = 0
 local _poll_duration = 0
 local _poll_est_total = 30
@@ -111,7 +114,58 @@ local _osd_queue     = {}
 local _poll_status   = nil
 local _poll_cue      = nil
 local _poll_cues     = 0
-local POLL_US     = 1000000  -- poll every 1 second (was 3s)
+local POLL_US     = 1000000  -- nominal 1 s cadence (see start_polling)
+
+-- Polling ticks — and what this VLC actually offers, measured in a real 3.0.23
+-- run by dumping the extension state at runtime:
+--   * vlc.timer            -> nil. The extension's vlc table is config deactivate
+--                             dialog directory_stream errno input io keep_alive
+--                             memory_stream msg net object osd playlist sd stream
+--                             strings var video vlm volume xml. Calling
+--                             vlc.timer(...) raised "attempt to call field 'timer'
+--                             (a nil value)" and aborted start_generation right
+--                             after the CLI was launched.
+--   * vlc.var.add_callback -> nil. The var library there is count_choices create
+--                             get get_list inc_integer dec_integer inherit
+--                             toggle_bool trigger_callback set libvlc_command.
+-- So a 3.0 extension has NO way to schedule anything: no timer, no variable
+-- callback. The run still launches and still writes its SRT next to the media,
+-- but the dialog cannot follow it — in that case it says so instead of sitting
+-- on "please wait" forever (see start_generation). Both mechanisms are still
+-- tried first, for VLC builds that do provide one.
+-- Declared before start_generation/deactivate so both resolve the locals.
+local function start_polling()
+    if _poll_tmr then return true end
+    _poll_start = os.time()
+
+    if type(vlc.timer) == "function" then
+        local ok, tmr = pcall(vlc.timer, poll_progress)
+        if ok and tmr then
+            _poll_tmr = tmr
+            pcall(function() tmr:schedule(POLL_US) end)
+            return true
+        end
+    end
+
+    local input = vlc.object.input()
+    if input and pcall(function() vlc.var.add_callback(input, "time", poll_progress) end) then
+        _poll_tmr, _poll_obj = true, input
+        return true
+    end
+
+    _poll_start = nil
+    return false
+end
+
+local function stop_polling()
+    if _poll_obj then
+        pcall(function() vlc.var.del_callback(_poll_obj, "time", poll_progress) end)
+    end
+    if type(_poll_tmr) == "userdata" then
+        pcall(function() _poll_tmr:cancel() end)
+    end
+    _poll_tmr, _poll_obj, _poll_start = nil, nil, nil
+end
 -- A cue may be shown up to one poll early: at a 1 s cadence that is what keeps a
 -- caption from appearing a full second after its line was spoken.
 local OSD_LEAD_US = POLL_US
@@ -145,8 +199,7 @@ function deactivate()
     -- Drop the widget references so every guarded use skips the UI, and cancel
     -- the timer. The Python run continues either way — its SRT is still written.
     if _poll_tmr then
-        pcall(function() _poll_tmr:cancel() end)
-        _poll_tmr = nil
+        stop_polling()
     end
     progress_bar, status_label, details_label, cue_label, debug_label = nil, nil, nil, nil, nil
     if dlg then dlg:delete(); dlg = nil end
@@ -193,9 +246,22 @@ function create_dialog()
     -- an explicit col/row/hspan/vspan.
     dlg:add_button("Generate", start_generation, 1, 6, 2, 1)
     dlg:add_button("Cancel",   cancel_run,       3, 6, 1, 1)
+    -- VLC 3.x gives an extension NO way to schedule anything (no vlc.timer, no
+    -- var callback — measured, and it is what extension.c opens), so the dialog
+    -- cannot notice the run finishing on its own. This button IS the tick: it
+    -- calls poll_progress, which reads the mirror file and loads the SRT once
+    -- the run is done. Click it any time; it is a no-op while a run is going.
+    dlg:add_button("Load SRT", load_srt_now, 1, 8, 3, 1)
 
     status_label  = dlg:add_label("Ready. Play a media file and click Generate.", 1, 7, 3, 1)
-    progress_bar  = dlg:add_progress_bar(0, 1, 8, 3, 1)
+    -- VLC 3.0.23's dialog widget set is add_button add_check_box add_dropdown
+    -- add_html add_image add_item add_label add_list add_node add_password
+    -- add_spin_icon add_subitem add_subnode add_subtitle add_subtitle_mrl
+    -- add_text_input add_value — no add_progress_bar. Calling it raised
+    -- "attempt to call method 'add_progress_bar' (a nil value)" and aborted
+    -- create_dialog() there, so details_label, cue_label, debug_label and
+    -- dlg:show() never ran. Every later use is nil-guarded, so detect it.
+    progress_bar  = dlg.add_progress_bar and dlg:add_progress_bar(0, 1, 8, 3, 1) or nil
     details_label = dlg:add_label("", 1, 9, 3, 1)
     cue_label     = dlg:add_label("", 1, 10, 3, 1)
     debug_label   = dlg:add_label("", 1, 11, 3, 1)
@@ -647,10 +713,7 @@ end
 -- process API); the PID is whitelisted to digits before it reaches the shell.
 function cancel_run()
     local tmp = _poll_tmp
-    if _poll_tmr then
-        pcall(function() _poll_tmr:cancel() end)
-        _poll_tmr = nil
-    end
+    stop_polling()
     if not tmp then
         set_status("Nothing is running.")
         return false
@@ -828,7 +891,8 @@ function start_generation()
     -- Build and launch command NON-BLOCKING so VLC's thread is not frozen.
     -- Windows: VBScript with bWaitOnReturn=False → wscript exits immediately.
     -- Unix:    trailing & → shell forks Python and exits immediately.
-    -- In both cases io.popen returns at once and we poll tmp_file via vlc.timer.
+    -- In both cases io.popen returns at once and we poll tmp_file via the input
+    -- "time" callback registered by start_polling.
     local engine_choice = get_engine()
     -- Auto/Parakeet resolve to an engine that can actually do this run (Parakeet
     -- has no translation and no detection); engine_note explains a substitution.
@@ -927,7 +991,9 @@ function start_generation()
     local duration = get_media_duration()
     _poll_duration = duration or 0
     if _poll_duration > 0 then
-        if engine == "parakeet" then
+        if engine == "parakeet" or engine == "photon" then
+            -- Both are CPU engines measured near 10x realtime here: parakeet
+            -- ~7.5x (sherpa int8) to 10x, photon 9.25-9.92x on film audio.
             _poll_est_total = math.ceil(_poll_duration * 0.1)
         else
             _poll_est_total = math.ceil(_poll_duration * 0.5)
@@ -941,16 +1007,39 @@ function start_generation()
 
     -- Show debug command so user can run it from terminal if needed
     if debug_label then debug_label:set_text("Debug: " .. cmd) end
-    _poll_tmr = vlc.timer(poll_progress)
-    _poll_tmr:schedule(POLL_US)
+    if not start_polling() then
+        -- No timer, no variable callback: this VLC cannot re-enter the extension
+        -- (see start_polling). Say what to do instead of leaving "please wait"
+        -- on screen forever — the run continues and writes <media>.srt, and the
+        -- "Load SRT" button below picks it up when it is done. Real-time OSD is
+        -- paced *by* those ticks, so without them that mode cannot work at all:
+        -- say so rather than queueing cues that will never be shown.
+        if mode == "realtime" then
+            set_status("Real-time OSD needs a timer this VLC does not give extensions. "
+                .. "Switch Mode to \"Generate & Load SRT\" — then click Load SRT when the run ends.")
+        else
+            set_status("Transcribing with " .. _poll_engine .. " — this VLC gives extensions no "
+                .. "timer, so click \"Load SRT\" when the run finishes to load the subtitles.")
+        end
+    end
 end
 
 ----------------------------------------------------------------
--- Polling callback — called by vlc.timer every POLL_US microseconds
+-- Polling callback — one tick per input "time" change while playing
 ----------------------------------------------------------------
 
+-- Manual tick for VLC builds that cannot schedule one (every 3.x):
+-- the "Load SRT" button calls this, so the mode is usable without polling.
+function load_srt_now()
+    if not _poll_tmp then
+        set_status("Nothing running — click Generate first.")
+        return
+    end
+    poll_progress()
+end
+
 function poll_progress()
-    _poll_secs = _poll_secs + (POLL_US / 1000000)
+    _poll_secs = os.time() - (_poll_start or os.time())
 
     -- Update progress bar based on elapsed vs estimated
     if _poll_est_total > 0 then
@@ -963,7 +1052,6 @@ function poll_progress()
         -- Temp file gone — shouldn't happen; keep waiting
         local eta = math.max(0, _poll_est_total - _poll_secs)
         set_status(string.format("Transcribing with %s (%s)... %ds  ETA ~%ds", _poll_engine, _poll_model, _poll_secs, eta))
-        if _poll_tmr then _poll_tmr:schedule(POLL_US) end
         return
     end
 
@@ -998,14 +1086,13 @@ function poll_progress()
         -- Python hasn't written output yet
         set_status(string.format("Loading model / starting... %ds", _poll_secs))
         update_details()
-        _poll_tmr:schedule(POLL_US)
         return
     end
 
     local d = parse_json(last_line)
     if d and (d.type == "done" or d.type == "error") then
         -- Python finished — process results
-        _poll_tmr = nil
+        stop_polling()
         if progress_bar then progress_bar:set_value(100) end
         update_details()
         process_results(_poll_tmp, _poll_mode)
@@ -1013,7 +1100,6 @@ function poll_progress()
         local eta = math.max(0, _poll_est_total - _poll_secs)
         set_status(string.format("Transcribing with %s (%s)... %ds  ETA ~%ds", _poll_engine, _poll_model, _poll_secs, eta))
         update_details()
-        if _poll_tmr then _poll_tmr:schedule(POLL_US) end
     end
 end
 
@@ -1075,6 +1161,9 @@ function process_results(tmp_file, mode)
     end
     f:close()
     pcall(function() os.remove(tmp_file) end)
+    -- The run is over: drop the handle so a later "Load SRT" click says so
+    -- instead of reporting an ETA for a mirror file that no longer exists.
+    if _poll_tmp == tmp_file then _poll_tmp = nil end
 
     if not srt_path then
         if seg_count == 0 then
