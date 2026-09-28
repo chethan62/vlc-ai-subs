@@ -59,7 +59,7 @@ local status_label    = nil
 local details_label   = nil
 local cue_label       = nil
 local progress_bar    = nil
-local debug_label     = nil
+local debug_field     = nil
 local osd_channel     = nil
 
 -- Dropdown value tables. The FIRST item is the default (VLC combo boxes select
@@ -202,7 +202,7 @@ function deactivate()
     if _poll_tmr then
         stop_polling()
     end
-    progress_bar, status_label, details_label, cue_label, debug_label = nil, nil, nil, nil, nil
+    progress_bar, status_label, details_label, cue_label, debug_field = nil, nil, nil, nil, nil
     if dlg then dlg:delete(); dlg = nil end
 end
 function close()      deactivate() end
@@ -260,12 +260,16 @@ function create_dialog()
     -- add_spin_icon add_subitem add_subnode add_subtitle add_subtitle_mrl
     -- add_text_input add_value — no add_progress_bar. Calling it raised
     -- "attempt to call method 'add_progress_bar' (a nil value)" and aborted
-    -- create_dialog() there, so details_label, cue_label, debug_label and
+    -- create_dialog() there, so details_label, cue_label, debug_field and
     -- dlg:show() never ran. Every later use is nil-guarded, so detect it.
     progress_bar  = dlg.add_progress_bar and dlg:add_progress_bar(0, 1, 8, 3, 1) or nil
     details_label = dlg:add_label("", 1, 9, 3, 1)
     cue_label     = dlg:add_label("", 1, 10, 3, 1)
-    debug_label   = dlg:add_label("", 1, 11, 3, 1)
+    -- A TEXT INPUT, not a label: VLC sizes the dialog to its widest label, and
+    -- the launch command is ~290 chars — as a label it stretched the dialog to
+    -- 2250 px on a 1920 px screen (measured). A field has a bounded width, so
+    -- the command stays there in full: click it and copy it to a terminal.
+    debug_field   = dlg:add_text_input("", 1, 11, 3, 1)
     dlg:show()
 end
 
@@ -612,18 +616,6 @@ end
 -- sufficient — $(...) and backticks execute even inside them.
 local function shq(s)
     return "'" .. string.gsub(s or "", "'", "'\\''") .. "'"
-end
-
--- VLC sizes the dialog to its WIDEST label, and its label rows are one line
--- high, so a long string cannot be wrapped — breaking it at "\n" gets clipped
--- and the width still follows the unwrapped text. The debug command is ~290
--- chars and stretched the dialog to 2250 px on a 1920 px screen. Keep every
--- label to one short line instead: elide it, and log the full text.
-local function elide(s, width)
-    width = width or 72
-    s = s or ""
-    if #s <= width then return s end
-    return string.sub(s, 1, width) .. " …"
 end
 
 ----------------------------------------------------------------
@@ -1019,10 +1011,9 @@ function start_generation()
     if progress_bar then progress_bar:set_value(0) end
 
     -- Show debug command so user can run it from terminal if needed
-    if debug_label then
-        -- One short line: the full command is in VLC's log (Tools → Messages)
-        -- and /tmp/aisubs_debug.log — a full-length label sized the dialog.
-        debug_label:set_text("Debug: " .. elide(cmd, 96))
+    if debug_field then
+        -- Full command, unbounded label: see the field's note in create_dialog().
+        debug_field:set_text(cmd)
     end
     vlc.msg.info("[AI Subs] cmd: " .. cmd)
     if not start_polling() then

@@ -927,7 +927,7 @@ The extension removes the mirror, the temp SRT and the pid file afterwards.
   'progress_bar' (a nil value)`, seen in a real run) and the transcription still
   finishes, writing its SRT.
 - **Cancel** — stops the run (its process tree, including the model subprocess); starting a new run cancels the previous one.
-- **Remembered settings** — engine/model/language/task/mode are stored in `<vlc user data dir>/vlc-ai-subs/settings.conf` and restored next session; the details pane shows the engine, model, elapsed, ETA and cue count, plus the latest transcribed cue. The **Debug** row shows the launch command shortened — VLC sizes the whole dialog to its widest label and the full command is ~290 characters, which used to stretch the dialog to 2250 px on a 1920 px screen. The complete command is in VLC's own log (`Tools → Messages`, or the `--debug` log) and `/tmp/aisubs_debug.log`.
+- **Remembered settings** — engine/model/language/task/mode are stored in `<vlc user data dir>/vlc-ai-subs/settings.conf` and restored next session; the details pane shows the engine, model, elapsed, ETA and cue count, plus the latest transcribed cue. The **Debug** row is a **text field** holding the whole launch command, so you can click it and copy the command into a terminal. It is a field and not a label on purpose: VLC sizes the whole dialog to its widest label, and that ~290-character command used to stretch the dialog to 2250 px on a 1920 px screen (a field has a bounded width — the dialog now grows by 54 px instead, 526 → 580).
 
 ## Manual Installation
 
