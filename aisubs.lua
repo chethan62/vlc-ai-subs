@@ -153,7 +153,8 @@ local function start_polling()
         return true
     end
 
-    _poll_start = nil
+    -- No timer and no callback: keep _poll_start anyway, so the manual "Load SRT"
+    -- ticks measure real elapsed time instead of reporting 0s forever.
     return false
 end
 
