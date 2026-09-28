@@ -614,6 +614,18 @@ local function shq(s)
     return "'" .. string.gsub(s or "", "'", "'\\''") .. "'"
 end
 
+-- VLC sizes the dialog to its WIDEST label, and its label rows are one line
+-- high, so a long string cannot be wrapped — breaking it at "\n" gets clipped
+-- and the width still follows the unwrapped text. The debug command is ~290
+-- chars and stretched the dialog to 2250 px on a 1920 px screen. Keep every
+-- label to one short line instead: elide it, and log the full text.
+local function elide(s, width)
+    width = width or 72
+    s = s or ""
+    if #s <= width then return s end
+    return string.sub(s, 1, width) .. " …"
+end
+
 ----------------------------------------------------------------
 -- Remembered settings
 ----------------------------------------------------------------
@@ -1007,7 +1019,12 @@ function start_generation()
     if progress_bar then progress_bar:set_value(0) end
 
     -- Show debug command so user can run it from terminal if needed
-    if debug_label then debug_label:set_text("Debug: " .. cmd) end
+    if debug_label then
+        -- One short line: the full command is in VLC's log (Tools → Messages)
+        -- and /tmp/aisubs_debug.log — a full-length label sized the dialog.
+        debug_label:set_text("Debug: " .. elide(cmd, 96))
+    end
+    vlc.msg.info("[AI Subs] cmd: " .. cmd)
     if not start_polling() then
         -- No timer, no variable callback: this VLC cannot re-enter the extension
         -- (see start_polling). Say what to do instead of leaving "please wait"
@@ -1016,11 +1033,10 @@ function start_generation()
         -- paced *by* those ticks, so without them that mode cannot work at all:
         -- say so rather than queueing cues that will never be shown.
         if mode == "realtime" then
-            set_status("Real-time OSD needs a timer this VLC does not give extensions. "
-                .. "Switch Mode to \"Generate & Load SRT\" — then click Load SRT when the run ends.")
+            set_status("Real-time OSD needs a timer this VLC does not provide — "
+                .. "switch Mode to Generate & Load SRT.")
         else
-            set_status("Transcribing with " .. _poll_engine .. " — this VLC gives extensions no "
-                .. "timer, so click \"Load SRT\" when the run finishes to load the subtitles.")
+            set_status("Transcribing — this VLC has no timer, so click Load SRT when the run ends.")
         end
     end
 end
