@@ -112,6 +112,7 @@ local _poll_shown    = 0
 local _osd_queue     = {}
 -- Latest status/transcript lines seen in the mirror file (dialog details pane)
 local _poll_status   = nil
+local _poll_done     = false  -- the run reported done/error (no ETA, no phase line)
 local _poll_cue      = nil
 local _poll_cues     = 0
 local POLL_US     = 1000000  -- nominal 1 s cadence (see start_polling)
@@ -743,6 +744,7 @@ function cancel_run()
     pcall(function() os.remove(string.gsub(tmp, "%.txt$", ".srt")) end)
     pcall(function() os.remove(pid_file_for(tmp)) end)
     _poll_tmp, _poll_cue, _poll_status, _poll_cues = nil, nil, nil, 0
+    _poll_done = false
     _osd_queue = {}
     if progress_bar then progress_bar:set_value(0) end
     if cue_label then cue_label:set_text("") end
@@ -980,6 +982,7 @@ function start_generation()
     _poll_status = nil
     _poll_cue    = nil
     _poll_cues   = 0
+    _poll_done   = false
     if details_label then
         details_label:set_text(string.format("%s · %s · %s · %s%s",
             _poll_engine, shown_model, language, task,
@@ -1101,6 +1104,9 @@ function poll_progress()
     if d and (d.type == "done" or d.type == "error") then
         -- Python finished — process results
         stop_polling()
+        -- An ETA at this point is a lie, and the CLI's last phase line
+        -- ("Transcribing...") beside a "Done!" status reads as a stuck run.
+        _poll_done, _poll_status = true, nil
         if progress_bar then progress_bar:set_value(100) end
         update_details()
         process_results(_poll_tmp, _poll_mode)
@@ -1118,13 +1124,15 @@ function update_details()
         local parts = {
             _poll_engine or "?", _poll_model or "?",
             string.format("%ds", _poll_secs),
-            string.format("ETA ~%ds", math.max(0, _poll_est_total - _poll_secs)),
         }
+        parts[#parts + 1] = _poll_done
+            and "done"
+            or string.format("ETA ~%ds", math.max(0, _poll_est_total - _poll_secs))
         if _poll_cues > 0 then
             parts[#parts + 1] = string.format("%d cues", _poll_cues)
         end
         local text = table.concat(parts, " · ")
-        if _poll_status then text = text .. " · " .. _poll_status end
+        if _poll_status and not _poll_done then text = text .. " · " .. _poll_status end
         details_label:set_text(text)
     end
     if cue_label and _poll_cue then
