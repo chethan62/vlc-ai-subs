@@ -623,12 +623,19 @@ VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
   them, and the size trend explains at most ~1.3× of that. So "use the open
   runtime with a small quant instead" does not get you this speed on a CPU —
   which is the honest reason to weigh the proprietary runtime at all.
-- **English is the only measured language.** Redux re-quantises the 25-language
-  v3 model, so the others may well work; a run in one of them says "untested" in
-  the status line instead of claiming coverage.
-- **Options:** `VSCL_AISUBS_PHOTON_MODEL=redux|ultra|<hf-repo-id>` (`ultra` is
-  385 MB), `VSCL_AISUBS_PHOTON_VENV=<dir>` for a venv kept elsewhere,
-  `VSCL_AISUBS_PHOTON=1` also installs it from `install.sh`.
+- **English is the only language measured HERE.** Redux re-quantises the 25-language
+  v3 model, and Moondream publishes FLEURS numbers for all 25 — average **10.56**
+  against the original's 11.62, but worse than the original on English (4.90 vs 4.25),
+  French (7.71 vs 4.81), German (5.42 vs 4.13) and Spanish (3.71 vs 3.12), and widest
+  behind in noise (9.04 vs 6.72 WER over the nine MUSAN conditions). Our own runs are
+  English only, so a run in another language says "untested" in the status line
+  instead of claiming coverage — and the published numbers are the quantiser's, not
+  measurements of this plugin.
+- **Options:** `VSCL_AISUBS_PHOTON_MODEL=redux|ultra|<hf-repo-id>` (`ultra` is the
+  full-precision sibling of the same 0.6B model — 1.3 GB of weights, and it is the
+  one built for GPUs, where the ternary codes have no packed kernel),
+  `VSCL_AISUBS_PHOTON_VENV=<dir>` for a venv kept elsewhere, `VSCL_AISUBS_PHOTON=1`
+  also installs it from `install.sh`.
 - **Every number above names its conditions, and they matter more than they
   sound.** The same plugin run measured **5.2×** — not 14× — on a 3-minute excerpt
   taken while this laptop sat at 93 °C with a load average of 9 (its CPU

@@ -50,7 +50,7 @@ VERIFIED_LANGUAGES = frozenset({"en"})
 
 MODELS = {
     "redux": ("moondream/parakeet-redux", "parakeet-redux (ternary, 178 MB)"),
-    "ultra": ("moondream/parakeet-ultra", "parakeet-ultra (ternary, 385 MB)"),
+    "ultra": ("moondream/parakeet-ultra", "parakeet-ultra (full precision, 1.3 GB)"),
 }
 DEFAULT_MODEL = "redux"
 

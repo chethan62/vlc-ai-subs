@@ -97,7 +97,10 @@ def test_the_default_variant_is_redux(monkeypatch):
 def test_the_variant_comes_from_the_env(monkeypatch):
     monkeypatch.setenv("VSCL_AISUBS_PHOTON_MODEL", "ultra")
     assert model_id() == MODELS["ultra"][0]
-    assert "385 MB" in model_label()
+    # full precision, not ternary: the ultra card says "same 0.6B parameters in full
+    # precision", and its repo is 1.26 GB of weights — the earlier "ternary, 385 MB"
+    # label was an invented size for a model this engine can actually select
+    assert "full precision" in model_label() and "1.3 GB" in model_label()
 
 
 def test_an_arbitrary_hf_id_is_passed_through(monkeypatch):
