@@ -42,6 +42,19 @@ def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
 
 
+WORDS_ENV = "VSCL_AISUBS_PHOTON_WORDS"
+
+
+def word_timings(env=None) -> bool:
+    """Ask the runtime for per-word spans as well as segment spans.
+
+    The plugin only needs cue spans, but a host that aligns or snaps to words
+    (whisperer) needs the words, and the runtime returns them in the same call —
+    `timestamps="word"` is a query parameter, not a second decode.
+    """
+    return (env or os.environ).get(WORDS_ENV) == "1"
+
+
 def keep_raw_segments(env=None) -> bool:
     """The host applies its own cue rules, so skip ours.
 
@@ -98,18 +111,26 @@ def native_kernels(ternary_module, devices) -> dict:
     return facts
 
 
-def to_segments(result: dict) -> list:
+def to_segments(result: dict, with_words: bool = False) -> list:
     """Photon's segments -> the plugin's {start, end, text} cue dicts.
 
     Blank segments are dropped here rather than left for the cue pass: an empty
-    cue is not silence to be timed, it is a hole.
+    cue is not silence to be timed, it is a hole. With `with_words` the runtime's
+    per-word spans ride along under "words" — the plugin's own cue pass ignores
+    them, a host that aligns to words does not.
     """
     out = []
     for seg in result.get("segments") or []:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
-        out.append({"start": float(seg["start"]), "end": float(seg["end"]), "text": text})
+        cue = {"start": float(seg["start"]), "end": float(seg["end"]), "text": text}
+        if with_words:
+            words = [{"start": float(w["start"]), "end": float(w["end"]), "word": w["word"]}
+                     for w in (seg.get("words") or []) if (w.get("word") or "").strip()]
+            if words:
+                cue["words"] = words
+        out.append(cue)
     return out
 
 
@@ -190,9 +211,10 @@ def main():
             # reported on its own line, and mixing it into the throughput figure
             # is how a short clip reads slower than the engine really is.
             started = time.time()
-            result = speech.transcribe(audio=str(wav_path), timestamps="segment")
+            result = speech.transcribe(audio=str(wav_path),
+                                       timestamps="word" if word_timings() else "segment")
         elapsed = time.time() - started
-        segments = to_segments(result)
+        segments = to_segments(result, with_words=word_timings())
     except Exception as exc:
         emit({"type": "error", "msg": f"Photon failed: {exc}"})
         sys.exit(1)
@@ -211,6 +233,8 @@ def main():
     # The same two steps every other engine gets: drop known hallucination
     # segments, then enforce line width / reading speed / cue length standards —
     # unless the host asked for raw segments (see keep_raw_segments).
+    if word_timings():
+        emit({"type": "status", "msg": "Photon: word timings included (timestamps=word)"})
     if keep_raw_segments():
         emit({"type": "status", "msg": "Photon: raw segments (the host applies its own cue rules)"})
     else:
@@ -220,8 +244,12 @@ def main():
         segments = apply_quality(segments, language=language)
 
     for i, seg in enumerate(segments, 1):
-        emit({"type": "sub", "i": i, "start": round(seg["start"], 3),
-              "end": round(seg["end"], 3), "text": seg["text"]})
+        event = {"type": "sub", "i": i, "start": round(seg["start"], 3),
+                 "end": round(seg["end"], 3), "text": seg["text"]}
+        if seg.get("words"):
+            event["words"] = [{"start": round(w["start"], 3), "end": round(w["end"], 3),
+                               "word": w["word"]} for w in seg["words"]]
+        emit(event)
 
     srt_path = None
     if srt_requested:

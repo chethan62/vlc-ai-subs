@@ -236,6 +236,7 @@ class _FakePhoton:
 
 def _wire(runner, monkeypatch, tmp_path, photon, *, torch_kwargs=None, ternary=True):
     """Point the runner at fakes and a real (empty) temp wav."""
+    _FAKE.append(photon)
     wav = tmp_path / "audio.16k.wav"
     wav.write_bytes(b"\0" * 64000)          # 2 s at 32 kB/s
     monkeypatch.setattr(runner, "list_audio_streams", lambda *a, **k: [])
@@ -449,3 +450,51 @@ def test_the_host_can_ask_for_raw_segments(runner, monkeypatch, tmp_path):
     processed = [e for e in events if e["type"] == "sub"]
     assert len(processed) > 1, "without the flag the cue pass splits the 20 s cue"
     assert any("\n" in c["text"] for c in processed), "and wraps its lines"
+
+
+def _wire_calls(runner, tmp_path):
+    """The timestamps value the last wired fake engine was called with"""
+    return [c["timestamps"] for c in _FAKE[-1].calls] if _FAKE else []
+
+
+_FAKE = []
+
+
+def _fake_photon_with_words():
+    return _FakePhoton([{
+        "start": 0.24, "end": 2.64, "text": "available?",
+        "words": [{"start": 0.24, "end": 0.9, "word": "available?"},
+                  {"start": 1.0, "end": 1.4, "word": "  "},        # blank token: dropped
+                  {"start": 1.5, "end": 2.64, "word": "sir"}],
+    }])
+
+
+def test_word_timings_are_opt_in_and_ride_along(runner, monkeypatch, tmp_path):
+    """A host that snaps or aligns to words asks for them; the runtime returns them
+    in the same call, so this is a query parameter, not a second decode. The plugin
+    never sets it, and its cue pass ignores whatever arrives."""
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x")
+    _wire(runner, monkeypatch, tmp_path, _fake_photon_with_words())
+    argv = ["photon_runner.py", str(media), "recommended", "en", "transcribe"]
+
+    code, events = _run(runner, argv, None)
+    assert code == 0
+    assert events[-1]["type"] == "done"
+    sub = [e for e in events if e["type"] == "sub"][0]
+    assert "words" not in sub, "words are not requested by default"
+    assert _wire_calls(runner, tmp_path)[0] == "segment", "and the runtime is asked for segments"
+
+    # A host that wants words is a host that applies its own cue rules: the plugin's
+    # own pass rewrites the cue dicts and drops keys it has no use for, so the words
+    # only survive for a host that asked for raw segments too (whisperer sets both).
+    monkeypatch.setenv("VSCL_AISUBS_PHOTON_WORDS", "1")
+    monkeypatch.setenv("VSCL_AISUBS_RAW_SEGMENTS", "1")
+    photon = _fake_photon_with_words()
+    _wire(runner, monkeypatch, tmp_path, photon)
+    code, events = _run(runner, argv, None)
+    sub = [e for e in events if e["type"] == "sub"][0]
+    assert photon.calls[0]["timestamps"] == "word", "the flag reaches the runtime's own call"
+    assert [w["word"] for w in sub["words"]] == ["available?", "sir"], "blank tokens are dropped"
+    assert sub["words"][0]["start"] == 0.24 and sub["words"][-1]["end"] == 2.64
+    assert any("word timings included" in e.get("msg", "") for e in events)

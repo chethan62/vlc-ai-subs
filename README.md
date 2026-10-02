@@ -635,7 +635,10 @@ VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
   full-precision sibling of the same 0.6B model — 1.3 GB of weights, and it is the
   one built for GPUs, where the ternary codes have no packed kernel),
   `VSCL_AISUBS_PHOTON_VENV=<dir>` for a venv kept elsewhere, `VSCL_AISUBS_PHOTON=1`
-  also installs it from `install.sh`.
+  also installs it from `install.sh`, and `VSCL_AISUBS_PHOTON_WORDS=1` also returns
+  per-word spans in the same call (`timestamps="word"`) — the run says so in the
+  status feed; the plugin's own cue pass ignores them, a host that aligns to words
+  (whisperer) asks for them alongside `VSCL_AISUBS_RAW_SEGMENTS=1`.
 - **Every number above names its conditions, and they matter more than they
   sound.** The same plugin run measured **5.2×** — not 14× — on a 3-minute excerpt
   taken while this laptop sat at 93 °C with a load average of 9 (its CPU
@@ -709,6 +712,8 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
 | `VSCL_AISUBS_PHOTON` | `1` installs Photon + Parakeet Redux (proprietary runtime) | unset | `install.sh` |
 | `VSCL_AISUBS_PHOTON_MODEL` | `redux` \| `ultra` \| an HF repo id | `redux` (178 MB) | Photon engine — the dialog's model dropdown is ignored, as for Parakeet/CrispASR |
+| `VSCL_AISUBS_PHOTON_WORDS` | `1` also returns per-word spans (`timestamps="word"`); the plugin's cue pass ignores them | unset |
+| `VSCL_AISUBS_RAW_SEGMENTS` | `1` → hand the engine's own cue spans to the caller (a batch host applies its own rules) | unset |
 | `VSCL_AISUBS_PHOTON_VENV` | venv directory | `~/.local/share/vlc-ai-subs/venv-photon` | Photon engine — its own venv, because it needs PyTorch and must not disturb WhisperX's |
 
 ## Architecture
