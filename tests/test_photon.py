@@ -418,3 +418,31 @@ def test_a_usage_error_exits_two(runner, monkeypatch):
     code, events = _run(runner, ["photon_runner.py", "only-two-args"], None)
     assert code == 2
     assert events[-1]["type"] == "error" and "usage" in events[-1]["msg"]
+
+
+def test_the_host_can_ask_for_raw_segments(runner, monkeypatch, tmp_path):
+    """A batch host driving this runner applies its own cue rules, so our
+    blocklist/quality passes must not pre-wrap and pre-split the cues — measured
+    on one long segment, whose fate is the only difference between the two runs."""
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x")
+    # 20 s in three sentences: past the 7 s cue ceiling, splittable at sentence
+    # ends, and each sentence too long for one 42-char line
+    long_text = ("This is a full sentence with enough words in it to need wrapping. " * 3).strip()
+    photon = _FakePhoton([{"start": 0.0, "end": 20.0, "text": long_text}])
+    _wire(runner, monkeypatch, tmp_path, photon)
+    argv = ["photon_runner.py", str(media), "recommended", "en", "transcribe"]
+
+    monkeypatch.setenv("VSCL_AISUBS_RAW_SEGMENTS", "1")
+    code, events = _run(runner, argv, None)
+    raw = [e for e in events if e["type"] == "sub"]
+    assert code == 0
+    assert len(raw) == 1 and raw[0]["end"] == 20.0, "raw keeps the engine's own span"
+    assert "\n" not in raw[0]["text"], "and is not wrapped to this plugin's line width"
+
+    monkeypatch.delenv("VSCL_AISUBS_RAW_SEGMENTS")
+    _wire(runner, monkeypatch, tmp_path, _FakePhoton([{"start": 0.0, "end": 20.0, "text": long_text}]))
+    code, events = _run(runner, argv, None)          # the first run unlinked its temp wav
+    processed = [e for e in events if e["type"] == "sub"]
+    assert len(processed) > 1, "without the flag the cue pass splits the 20 s cue"
+    assert any("\n" in c["text"] for c in processed), "and wraps its lines"

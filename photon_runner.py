@@ -35,8 +35,22 @@ from core.procs import install_termination_handler
 from core.srt import write_srt
 
 
+RAW_ENV = "VSCL_AISUBS_RAW_SEGMENTS"
+
+
 def emit(data: dict):
     print(json.dumps(data, ensure_ascii=False), flush=True)
+
+
+def keep_raw_segments(env=None) -> bool:
+    """The host applies its own cue rules, so skip ours.
+
+    Our blocklist and `apply_quality` passes re-wrap and re-split cues to THIS
+    plugin's settings; a batch host (whisperer drives this runner too) has its own
+    max-line / max-duration / sync settings and wants the segments as the engine
+    produced them, or the two sets of rules fight and the host's are the weaker.
+    """
+    return (env or os.environ).get(RAW_ENV) == "1"
 
 
 def _debug_enabled() -> bool:
@@ -195,11 +209,15 @@ def main():
         return
 
     # The same two steps every other engine gets: drop known hallucination
-    # segments, then enforce line width / reading speed / cue length standards.
-    from core.blocklist import filter_segments
-    segments = filter_segments(segments)
-    from core.cues import apply_quality
-    segments = apply_quality(segments, language=language)
+    # segments, then enforce line width / reading speed / cue length standards —
+    # unless the host asked for raw segments (see keep_raw_segments).
+    if keep_raw_segments():
+        emit({"type": "status", "msg": "Photon: raw segments (the host applies its own cue rules)"})
+    else:
+        from core.blocklist import filter_segments
+        segments = filter_segments(segments)
+        from core.cues import apply_quality
+        segments = apply_quality(segments, language=language)
 
     for i, seg in enumerate(segments, 1):
         emit({"type": "sub", "i": i, "start": round(seg["start"], 3),
