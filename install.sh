@@ -134,21 +134,6 @@ else
     log "NVIDIA GPU detected — skipping whisper.cpp (VSCL_AISUBS_WHISPERCPP=1 adds the Vulkan engine)"
 fi
 
-# Photon + Parakeet Redux is opt-in and stays that way: its RUNTIME is
-# proprietary (Moondream Photon / kestrel-kernels — reverse engineering
-# forbidden; the weights are CC-BY-4.0). VSCL_AISUBS_PHOTON=1 installs it.
-if [ "${VSCL_AISUBS_PHOTON:-0}" = "1" ]; then
-    if [ -x "$HOME/.local/share/vlc-ai-subs/venv-photon/bin/python" ]; then
-        ok "Photon (Parakeet Redux) already installed"
-    elif bash "$SCRIPT_DIR/install-photon-model.sh"; then
-        ok "Photon ready (Parakeet Redux, 178 MB ternary Parakeet v3)"
-    else
-        log "Photon install failed — every other engine is unaffected (retry: bash install-photon-model.sh)"
-    fi
-else
-    log "Photon/Parakeet Redux not installed (VSCL_AISUBS_PHOTON=1 adds it; proprietary runtime)"
-fi
-
 # ── 4. Sync plugin files ──
 log "Syncing plugin files..."
 mkdir -p "$INSTALL_DIR" "$EXT_DIR"
@@ -165,11 +150,9 @@ cp "$SCRIPT_DIR/nllb_translate.py" "$INSTALL_DIR/"   2>/dev/null || true
 cp "$SCRIPT_DIR/parakeet_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/whispercpp_runner.py" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/crispasr_runner.py" "$INSTALL_DIR/"  2>/dev/null || true
-cp "$SCRIPT_DIR/photon_runner.py" "$INSTALL_DIR/"    2>/dev/null || true
 cp "$SCRIPT_DIR/install-parakeet-model.sh" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-whisper-cpp.sh" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-crispasr.sh"     "$INSTALL_DIR/" 2>/dev/null || true
-cp "$SCRIPT_DIR/install-photon-model.sh" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-nllb-model.sh"      "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/install-m2m-model.sh"       "$INSTALL_DIR/" 2>/dev/null || true
 cp "$SCRIPT_DIR/aisubs.lua" "$EXT_DIR/"             2>/dev/null || true

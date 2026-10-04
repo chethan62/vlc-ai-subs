@@ -12,7 +12,7 @@ or real-time on-screen captions.
 |---|---|
 | **Zero-config** | "Recommended (auto)" model + Auto engine + Translate to English by default — open a video, click Generate, done |
 | **Word-level timing** | WhisperX wav2vec2 alignment on CUDA, or Parakeet's native TDT word timestamps (CPU too) |
-| **Five engines** | WhisperX (multilingual, word-aligned), Parakeet (English + 25 European languages, ~10× faster), whisper.cpp (Vulkan), CrispASR (one ggml binary: Parakeet/Cohere/Canary/Granite/Qwen3/Voxtral, picked by VRAM, with a CTC aligner) or Photon (Parakeet Redux — ternary Parakeet in 178 MB, the fastest engine here on CPU) |
+| **Four engines** | WhisperX (multilingual, word-aligned), Parakeet (English + 25 European languages, ~10× faster), whisper.cpp (Vulkan) or CrispASR (one ggml binary: Parakeet/Cohere/Canary/Granite/Qwen3/Voxtral, picked by VRAM, with a CTC aligner) |
 | **Auto engine** | Auto (default) picks the fastest engine that covers the language (Parakeet v2/v3), else WhisperX (NVIDIA) / whisper.cpp (AMD/Intel) / CPU |
 | **GPU acceleration** | CUDA on NVIDIA; **Vulkan for AMD/Intel/NVIDIA** via whisper.cpp; CPU fallback |
 | **Two modes** | Generate & Load SRT (default), or Real-time OSD — cues appear on the OSD when playback reaches them |
@@ -209,7 +209,7 @@ Both consequences are stated in the dialog instead of being left silent:
   that never reach the screen.
 
 Verified end to end in a real VLC 3.0.23 (2026-09-28): extension dialog → Generate
-(Photon engine, 40 s clip of a real episode) → 15 cues in 26 s → Load SRT →
+(Parakeet engine, 40 s clip of a real episode) → 15 cues in 26 s → Load SRT →
 `[AI Subs] Loaded: /tmp/vlc_test40.srt` in VLC's log, dialog status
 "Done! 15 segments. Subtitles loaded.", and OCR of the video window read the
 captions back off the picture (`At what hour do you expect him?`,
@@ -311,7 +311,6 @@ Then:
 | **Parakeet** (opt-in: `VSCL_AISUBS_BACKEND=parakeet`) | English (v2) or 25 European languages (v3) | **native TDT word timestamps** (no aligner) | **~10× faster, CPU-friendly** | CC-BY-4.0 |
 | **whisper.cpp** (Vulkan: AMD/Intel too) | 99 (whisper.cpp / ggml) | segment-level (no aligner) | GPU via Vulkan, CPU fallback | MIT |
 | **CrispASR** (opt-in) | 6+ model families, by language | optional CTC aligner | 4.2–4.5× CPU; GPU by model size | MIT (binary) |
-| **Photon** (opt-in) | English (verified); 25 claimed, unmeasured | segment-level | **13.98× CPU** — the fastest here | weights CC-BY-4.0 / runtime **proprietary** |
 
 Pick **Parakeet** in the dialog for English films — self-reported mean WER
 6.05% on the HF Open-ASR leaderboard (independent 2026 evals put
@@ -580,90 +579,38 @@ VSCL_AISUBS_BACKEND=crispasr                          # plus the dialog's engine
   dashes, no labels, no flag. Numbers and method in
   `.research/2026-09-16-diarization-evaluated.md`.
 
-### Photon (Parakeet Redux) — the fastest engine here, on the CPU
+### Removed: Photon (Parakeet Redux)
 
-[Moondream Photon](https://moondream.ai/) runs **Parakeet Redux**: NVIDIA's
-`parakeet-tdt-0.6b-v3` re-quantised to ternary weights (1.58-bit, **178 MB**
-instead of 1.2 GB). It is the fastest ASR measured on this project's laptop, and
-it is **never chosen automatically** — its runtime is proprietary, and its
-weakest case is exactly where films are hardest:
+There was a sixth engine here, and it was the fastest thing this plugin ever
+measured on a CPU — **13.98× realtime** on the 125 s fixture, against 7.46× for the
+sherpa-onnx int8 Parakeet engine and 4.64× for whisper.cpp `small.en`. It is gone in
+3.5, and the reason is the licence, not the speed:
 
-| 125 s clip, 8 CPU threads, cool box (load < 2, package 55–58 °C) | realtime |
-|---|---|
-| **Photon (Parakeet Redux), CPU** | **13.98×** |
-| Parakeet via sherpa-onnx int8 (this plugin's Parakeet engine) | 7.46× |
-| ggml `parakeet-cli`, Vulkan (GTX 1650) | 5.24× |
-| whisper.cpp `small.en`, CPU | 4.64× |
+- Its **weights** were fine — NVIDIA's `parakeet-tdt-0.6b-v3` re-quantised to ternary
+  by Moondream, CC-BY-4.0, attribution included.
+- Its **runtime** was not. `kestrel-kernels` (M87 Labs) states that it is "licensed
+  only under a separate written agreement", that "if you have not entered into such
+  an Agreement, you have no license to use this software", and its §2 forbids reverse
+  engineering, deobfuscation, unpacking the packed kernel collection and any
+  redistribution — naming AI assistants among those who must not do it. §4 adds that
+  circumventing the container's protection may break anti-circumvention law, and §6
+  terminates the licence on any breach.
 
-```bash
-./install-photon-model.sh          # its own venv (1.6 GB measured, CPU PyTorch); opt-in
-VSCL_AISUBS_BACKEND=photon         # or the dialog's engine pick
-```
+So an engine whose *code* was small, MIT and clean still could not be used by anyone
+who had not signed something with a third party — which is not a fair thing for a
+plugin to imply it can do, and no number of opt-in switches or honest status lines
+fixes that. Everything Photon-related is deleted: `core/photon_models.py`,
+`backends/photon.py`, `photon_runner.py`, `install-photon-model.sh`, its 32 tests,
+its environment variables and its entry in the dialog. The engines that remain are
+MIT/Apache-2.0 throughout.
 
-- **Auto never picks it, even on a GPU box.** The packed ternary kernel exists
-  only for x86 int8 (avx2 / avxvnni / avx512vnni) and Apple Metal; on CUDA the
-  codes are dequantized and four conformer kernels fall back to PyTorch —
-  measured **2–2.4× slower than the same machine's CPU**. So `device=auto`
-  prefers a device that has a native kernel, and `cuda` is used only when asked
-  for explicitly (and then the status line says it is the slow choice). The live
-  kernel here is `avx2`, which is this CPU's ceiling — no AVX-512, no AVX-VNNI.
-- **It is the weaker model in noise, measured here.** White noise mixed at a
-  measured SNR: **0.0 % WER clean and at 10 dB, 7.1 % at 5 dB, 10.7 % at 0 dB** —
-  every error a similar-sounding substitution (`turnips` → `turnets`,
-  `fattened` → `satin`), with no dropped or invented content. Film audio is the
-  hard case, so treat this as a fast clean-speech / draft path rather than a
-  replacement for the Parakeet engine above.
-- **Two unrelated runtimes agree with it.** whisper.cpp's own ggml Parakeet
-  runtime, driven directly, reproduces Photon's text for the test fixture
-  word-for-word — the same weights behave the same way in a different engine.
-- **And the speed is the kernel, not the 178 MB.** Running that same ggml runtime
-  with progressively smaller weights of the same model (measured in one quiet
-  window on this laptop): q8_0 **669 MB → 4.87×**, q4_k **415 MB → 6.21×**, q4_0
-  **355 MB → 6.30×**. Halving the file buys 29 %; Redux is **2.2×** the fastest of
-  them, and the size trend explains at most ~1.3× of that. So "use the open
-  runtime with a small quant instead" does not get you this speed on a CPU —
-  which is the honest reason to weigh the proprietary runtime at all.
-- **English is the only language measured HERE.** Redux re-quantises the 25-language
-  v3 model, and Moondream publishes FLEURS numbers for all 25 — average **10.56**
-  against the original's 11.62, but worse than the original on English (4.90 vs 4.25),
-  French (7.71 vs 4.81), German (5.42 vs 4.13) and Spanish (3.71 vs 3.12), and widest
-  behind in noise (9.04 vs 6.72 WER over the nine MUSAN conditions). Our own runs are
-  English only, so a run in another language says "untested" in the status line
-  instead of claiming coverage — and the published numbers are the quantiser's, not
-  measurements of this plugin.
-- **Options:** `VSCL_AISUBS_PHOTON_MODEL=redux|ultra|<hf-repo-id>` (`ultra` is the
-  full-precision sibling of the same 0.6B model — 1.3 GB of weights, and it is the
-  one built for GPUs, where the ternary codes have no packed kernel),
-  `VSCL_AISUBS_PHOTON_VENV=<dir>` for a venv kept elsewhere, `VSCL_AISUBS_PHOTON=1`
-  also installs it from `install.sh`, and `VSCL_AISUBS_PHOTON_WORDS=1` also returns
-  per-word spans in the same call (`timestamps="word"`) — the run says so in the
-  status feed; the plugin's own cue pass ignores them, a host that aligns to words
-  (whisperer) asks for them alongside `VSCL_AISUBS_RAW_SEGMENTS=1`.
-- **Every number above names its conditions, and they matter more than they
-  sound.** The same plugin run measured **5.2×** — not 14× — on a 3-minute excerpt
-  taken while this laptop sat at 93 °C with a load average of 9 (its CPU
-  power-caps: measured 2.3× slower hot than cool). Time transcription on an idle
-  machine or don't quote the number.
-- **On real film audio the margin over the engine it would replace is ~1.3×, not
-  1.9×.** Same 183.6 s English track (a real episode excerpt with music and
-  overlapping dialogue), same quiet box, transcribe time only: this plugin's Photon
-  engine **9.25× / 9.92×** (two runs, load 1.81, 66 °C) against sherpa-onnx int8
-  chunked **7.45×** (load 1.65, 68 °C). The 125 s fixture in the table above is
-  synthetic read speech repeated twelve times and it flatters Photon more than it
-  flatters sherpa, whose figure is **7.46× on the fixture and 7.45× here** — it does
-  not care what the audio is, while Photon loses a third of its throughput on real
-  material. So the honest case is a ~29 % speed win on dialogue, weighed against a
-  proprietary runtime and a model that degrades faster in noise: reach for it for
-  clean speech and drafts, not as the film default.
-- **Length is unmeasured here.** The longest verification is a 3-minute real
-  excerpt (47 cues, no overlaps, the correct English track chosen from three).
-  Photon self-segments with its own VAD and needs no chunk plan, so its peak
-  memory on a feature film is an open question — unlike Parakeet, whose chunking
-  was sized from measured RSS after a 9.3 GB OOM kill.
-- **The engine that reads the weights is not open source.** Weights are
-  CC-BY-4.0; the Photon runtime (`kestrel-kernels`) is proprietary and its
-  licence forbids reverse engineering. Nothing is vendored, and the installer
-  says so before it downloads anything.
+The numbers stay in the record because they are still true and were the reason the
+engine existed: 9.25–9.92× on a 183.6 s real episode excerpt (against sherpa int8's
+7.45×), the device rule that `auto` must prefer a CPU kernel because CUDA has none of
+the packed ternary kernels (2–2.4× slower there), and the noise weakness that made it
+a draft path rather than a default. If you want that speed from open code, the honest
+reading of the measurements was always that the kernel — not the 178 MB of weights —
+was the advantage.
 
 ## Models
 
@@ -710,11 +657,6 @@ Models are downloaded from Hugging Face on first use (cached in `~/.cache/huggin
 | `VSCL_AISUBS_CRISPASR_CHUNK` | seconds, `0` = no chunking | sized from `MemAvailable` (a quarter of it, ~4 MB per second of audio, clamped 30–600 s) | CrispASR audio per pass — honoured by the aligned/VAD paths (a 20-minute *aligned* input without it peaked at 8.3 GB RSS + 4.8 GB swap and was OOM-killed). Measured 2026-09-17: the `parakeet` backend ignores it and streams the whole file in one pass |
 | `VSCL_AISUBS_WHISPERCPP` | `1` installs the Vulkan build on NVIDIA boxes too | unset | `install.sh` |
 | `VSCL_AISUBS_SKIP_WHISPERCPP` | `1` skips the whisper.cpp build | unset | `install.sh` |
-| `VSCL_AISUBS_PHOTON` | `1` installs Photon + Parakeet Redux (proprietary runtime) | unset | `install.sh` |
-| `VSCL_AISUBS_PHOTON_MODEL` | `redux` \| `ultra` \| an HF repo id | `redux` (178 MB) | Photon engine — the dialog's model dropdown is ignored, as for Parakeet/CrispASR |
-| `VSCL_AISUBS_PHOTON_WORDS` | `1` also returns per-word spans (`timestamps="word"`); the plugin's cue pass ignores them | unset |
-| `VSCL_AISUBS_RAW_SEGMENTS` | `1` → hand the engine's own cue spans to the caller (a batch host applies its own rules) | unset |
-| `VSCL_AISUBS_PHOTON_VENV` | venv directory | `~/.local/share/vlc-ai-subs/venv-photon` | Photon engine — its own venv, because it needs PyTorch and must not disturb WhisperX's |
 
 ## Architecture
 
@@ -726,14 +668,12 @@ whisperx_runner.py           WhisperX inside the Python 3.12 venv (subprocess)
 parakeet_runner.py           Parakeet TDT via sherpa-onnx (same JSONL contract)
 whispercpp_runner.py         whisper.cpp via whisper-cli — Vulkan (AMD/Intel/NVIDIA)
 crispasr_runner.py           CrispASR via one ggml binary (Parakeet/Cohere/Canary/…, CTC aligner)
-photon_runner.py             Photon (Moondream) running Parakeet Redux — CPU ternary kernels
 nllb_translate.py            NLLB-200 / M2M-100 translate cascade (ctranslate2)
 core/
   emitter.py                 JSONL + Lua poll-mirror output
   srt.py                     SRT timestamp formatting + file writing
   cues.py                    cue line-wrapping + timing quality pass
   crispasr_models.py         CrispASR model/VRAM tiers + aligner policy (leaf)
-  photon_models.py           Photon: variant, venv, device policy (leaf — the CUDA trap lives here)
   blocklist.py               hallucination-phrase filter (VSCL_AISUBS_BLOCKLIST)
   audio.py                   ffmpeg decode to 16 kHz mono wav
   gpu.py                     NVIDIA/Vulkan capability probes (engine choice)
@@ -746,7 +686,6 @@ backends/
   parakeet.py                Parakeet (sherpa-onnx, v2 English / v3 multilingual)
   whispercpp.py              whisper.cpp (Vulkan: AMD/Intel/NVIDIA, or CPU)
   crispasr.py                CrispASR (ggml binary, VRAM-tiered models)
-  photon.py                  Photon (Parakeet Redux; spawns its own venv's interpreter)
 ```
 
 **JSONL contract (stdout):** `{"type":"status","msg":...}`, `{"type":"sub","i":N,"start":S,"end":E,"text":...}`, `{"type":"done","segments":N,"srt_path":...}`, `{"type":"error","msg":...}`. Lua polls the mirror file (argv[5]) for progress.
@@ -861,9 +800,8 @@ cue wrapping + timing cleanup (word-boundary/balanced/CJK, min duration/gap),
 JSONL emitter + mirror file, VRAM/RAM model recommendation (boundary cases),
 backend resolution (WhisperX default, Parakeet opt-in, whisper.cpp + its
 `whisper_cpp` alias, the auto hardware policy, missing-backend errors),
-the Photon device rule (`auto` must prefer a native ternary kernel over a GPU;
-an unavailable forced device is an error, not a silent substitution) + its
-runner contract (segment timestamps, translate refusal, stray-SRT guard),
+the CrispASR VRAM-tier rule (an unavailable forced device is an error, not a
+silent substitution),
 
 Parakeet v2/v3 variant selection (language sets, forced version, relocated
 model directories) + the auto engine's language rule, runner CLI errors,
@@ -959,7 +897,6 @@ If the setup script doesn't work for your system:
    bash install-nllb-model.sh                                    # translate cascade (~1.3 GB)
    bash install-whisper-cpp.sh small                             # Vulkan engine (AMD/Intel/NVIDIA)
    bash install-crispasr.sh                                      # CrispASR ggml binary (many models)
-   bash install-photon-model.sh                                  # Parakeet Redux (proprietary runtime)
    ```
 2. Copy `aisubs.lua` to your VLC extensions folder:
    - **Linux**: `~/.local/share/vlc/lua/extensions/`
@@ -989,7 +926,6 @@ If the setup script doesn't work for your system:
 - [nvidia/parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) · [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) — the Parakeet models (CC-BY-4.0)
 - [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Parakeet inference, and the int8 ONNX conversions of both Parakeet models
 - [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) — the Vulkan (AMD/Intel/NVIDIA) and CPU Whisper runtime
-- [Moondream](https://moondream.ai/) — Photon, the runtime behind the Parakeet Redux engine (weights CC-BY-4.0; the Photon runtime and `kestrel-kernels` are **proprietary** — see the license table)
 
 **Translation:**
 
@@ -1018,8 +954,6 @@ with its own license — checked per model card:
 | Parakeet-TDT-0.6B v2 (English) / v3 (25 European languages) | **CC-BY-4.0** (commercial OK, attribution required) | Parakeet engine — © NVIDIA, ONNX conversion by [k2-fsa](https://github.com/k2-fsa/sherpa-onnx) |
 | whisper.cpp + ggml models | MIT | Vulkan (AMD/Intel/NVIDIA) + CPU engine |
 | sherpa-onnx | Apache-2.0 | Parakeet inference runtime |
-| Moondream Photon (runtime) | **proprietary** — no licence granted without an agreement; reverse engineering forbidden | optional Photon engine (opt-in: `./install-photon-model.sh`) |
-| Parakeet Redux / Ultra weights | **CC-BY-4.0** (© Moondream, on NVIDIA Parakeet v3) | optional Photon engine — the weights are open, the runtime that runs them is not |
 | NLLB-200 (translate cascade, default) | **CC-BY-NC-4.0** | personal / non-commercial |
 | M2M-100 1.2B (translate cascade, optional) | **MIT** | commercial use |
 

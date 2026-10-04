@@ -9,13 +9,10 @@ Engines
   whispercpp   whisper.cpp: the Vulkan path that accelerates on AMD and Intel
                GPUs as well as NVIDIA, with a CPU fallback.
   crispasr     CrispASR: one ggml binary, model by VRAM tier, CTC aligner.
-  photon       Moondream Photon running Parakeet Redux (ternary 178 MB): the
-               fastest engine here on CPU, but its runtime is proprietary and
-               its accuracy is worst exactly where films are hard (noise).
 
 Selection
   VSCL_AISUBS_BACKEND unset / "auto" → hardware policy (see _auto_backend)
-  VSCL_AISUBS_BACKEND=whisperx|parakeet|whispercpp|crispasr|photon → that engine
+  VSCL_AISUBS_BACKEND=whisperx|parakeet|whispercpp|crispasr → that engine
   (error if absent)
   legacy values (moonshine, ...) → WhisperX; "whisper_cpp" is an alias for the
   new whispercpp engine.
@@ -33,7 +30,6 @@ _ENGINES = {
     "parakeet": ("backends.parakeet", "ParakeetBackend", "Parakeet"),
     "whispercpp": ("backends.whispercpp", "WhisperCppBackend", "whisper.cpp"),
     "crispasr": ("backends.crispasr", "CrispAsrBackend", "CrispASR"),
-    "photon": ("backends.photon", "PhotonBackend", "Photon (Parakeet Redux)"),
 }
 
 _INSTALL_HINT = {
@@ -47,7 +43,6 @@ _INSTALL_HINT = {
     ),
     "whispercpp": "./install-whisper-cpp.sh",
     "crispasr": "./install-crispasr.sh",
-    "photon": "./install-photon-model.sh",
 }
 
 # Pre-fork engine names still found in the wild / in old docs.

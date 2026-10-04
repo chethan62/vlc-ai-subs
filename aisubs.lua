@@ -35,14 +35,13 @@ https://github.com/chethan62/vlc-ai-subs
 function descriptor()
     return {
         title = "AI Subs Generator",
-        version = "3.4",
+        version = "3.5",
         author = "chethan62",
         url = "https://github.com/chethan62/vlc-ai-subs",
-        shortdesc = "AI subtitle generator (5 engines: WhisperX/Parakeet/CrispASR/Photon)",
+        shortdesc = "AI subtitle generator (4 engines: WhisperX/Parakeet/CrispASR/whisper.cpp)",
         description = "Generate subtitles using local AI. "
             .. "WhisperX (multilingual), Parakeet (v2 English / v3 25 languages), "
-            .. "whisper.cpp (Vulkan), CrispASR (ggml, by VRAM) or Photon "
-            .. "(Parakeet Redux, fastest on CPU). "
+            .. "whisper.cpp (Vulkan) or CrispASR (ggml, by VRAM). "
             .. "Real-time OSD or generate-and-load SRT. "
             .. "Compatible with VLC 3.x (4.x: same Lua API).",
         capabilities = {"menu"},
@@ -71,7 +70,6 @@ local ENGINES = {
     { "parakeet",   "Parakeet (fastest; v2 English / v3 25 languages)" },
     { "whispercpp", "whisper.cpp (Vulkan - AMD/Intel GPUs)" },
     { "crispasr",   "CrispASR (ggml: Parakeet/Cohere/Canary by VRAM)" },
-    { "photon",     "Photon (Parakeet Redux - fastest on CPU, English)" },
 }
 local MODELS = {
     { "recommended",    "Recommended (auto)" },
@@ -411,10 +409,6 @@ function engine_for(engine, language, task)
         -- CrispASR's --translate is whisper-only; every other backend transcribes.
         return "whisperx", "CrispASR cannot translate - using WhisperX"
     end
-    if engine == "photon" and task == "translate" then
-        -- Photon has no translation head at all (it is an ASR model).
-        return "whisperx", "Photon cannot translate - using WhisperX"
-    end
     return engine, nil
 end
 
@@ -423,7 +417,6 @@ function engine_label(engine)
     if engine == "parakeet" then return "Parakeet" end
     if engine == "whispercpp" then return "whisper.cpp" end
     if engine == "crispasr" then return "CrispASR" end
-    if engine == "photon" then return "Photon" end
     if engine == "auto" then return "Auto" end
     return "WhisperX"
 end
@@ -904,11 +897,10 @@ function start_generation()
     -- Auto/Parakeet resolve to an engine that can actually do this run (Parakeet
     -- has no translation and no detection); engine_note explains a substitution.
     local engine, engine_note = engine_for(engine_choice, language, task)
-    -- Parakeet and Photon ignore the model dropdown (fixed weights: Parakeet's
-    -- variant follows the language, Photon's comes from
-    -- VSCL_AISUBS_PHOTON_MODEL), so show the model that actually runs instead of
-    -- a WhisperX size name that has nothing to do with the engine.
-    local fixed_model = { parakeet = "parakeet-tdt-0.6b-v2", photon = "parakeet-redux" }
+    -- Parakeet ignores the model dropdown (its weights are fixed; the variant
+    -- follows the language), so show the model that actually runs instead of a
+    -- WhisperX size name that has nothing to do with the engine.
+    local fixed_model = { parakeet = "parakeet-tdt-0.6b-v2" }
     local shown_model = fixed_model[engine] or model
     -- Remember the dialog choices (not the substitution) for the next session.
     save_settings({
@@ -999,9 +991,8 @@ function start_generation()
     local duration = get_media_duration()
     _poll_duration = duration or 0
     if _poll_duration > 0 then
-        if engine == "parakeet" or engine == "photon" then
-            -- Both are CPU engines measured near 10x realtime here: parakeet
-            -- ~7.5x (sherpa int8) to 10x, photon 9.25-9.92x on film audio.
+        if engine == "parakeet" then
+            -- A CPU engine measured 7.5x (sherpa int8) to 10x on film audio.
             _poll_est_total = math.ceil(_poll_duration * 0.1)
         else
             _poll_est_total = math.ceil(_poll_duration * 0.5)
