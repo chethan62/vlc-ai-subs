@@ -3,9 +3,12 @@
 #
 # Opt-in, not part of install.sh: it downloads a PROPRIETARY engine.
 #   * weights: CC-BY-4.0 (Moondream, on NVIDIA parakeet-tdt-0.6b-v3)
-#   * runtime: Moondream Photon + kestrel-kernels — proprietary, and its licence
-#     forbids reverse engineering. Read it before installing if that matters to
-#     you; the other engines in this plugin are MIT/Apache-2.0 only.
+#   * runtime: Moondream Photon + kestrel-kernels — proprietary (M87 Labs). Its
+#     licence grants nothing without a separate written agreement with them ("if
+#     you have not entered into such an Agreement, you have no license to use this
+#     software") and forbids reverse engineering, unpacking or redistribution. So:
+#     running this install is your call, and what you install here is not yours to
+#     pass on. The other engines in this plugin are MIT/Apache-2.0 only.
 #
 # Its own venv on purpose. Photon needs PyTorch, so it cannot use the plugin's
 # stdlib-only CLI venv — and it must not borrow venv-whisperx, where a pip
@@ -86,5 +89,7 @@ echo "Caveat worth keeping: in noise this model degrades to similar-sounding"
 echo "substitutions (measured 7.1% WER at 5 dB SNR, 10.7% at 0 dB, 0% clean)."
 echo "It is a fast clean-speech/draft engine, not the film-accuracy engine."
 echo
-echo "License: weights CC-BY-4.0 (Moondream); the Photon runtime is proprietary"
-echo "and its licence forbids reverse engineering. Nothing is vendored here."
+echo "License: weights CC-BY-4.0 (Moondream); the Photon runtime (kestrel-kernels)"
+echo "+ moondream) is proprietary M87 Labs software, licensed to you only under their"
+echo "own agreement — and its licence forbids reverse engineering and redistribution."
+echo "Nothing is vendored into the plugin, and do not ship this venv inside a build."
