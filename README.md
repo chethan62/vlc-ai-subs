@@ -953,6 +953,9 @@ with its own license — checked per model card:
 | OpenAI Whisper | MIT | the model family all engines run; the `translate` fallback |
 | Parakeet-TDT-0.6B v2 (English) / v3 (25 European languages) | **CC-BY-4.0** (commercial OK, attribution required) | Parakeet engine — © NVIDIA, ONNX conversion by [k2-fsa](https://github.com/k2-fsa/sherpa-onnx) |
 | whisper.cpp + ggml models | MIT | Vulkan (AMD/Intel/NVIDIA) + CPU engine |
+| CrispASR (one C++ ggml binary, 119 backends) | **MIT** | opt-in engine; fetches its own GGUF per VRAM tier |
+| ↳ tiers Parakeet v3 (0.6B / 1.1B), Canary-Qwen 2.5B | **CC-BY-4.0** | attribution (© NVIDIA); commercial OK |
+| ↳ tiers Cohere Transcribe, Qwen3-ASR (0.6B / 1.7B), Voxtral Mini 3B, Granite Speech 2B | **Apache-2.0** | no attribution required |
 | sherpa-onnx | Apache-2.0 | Parakeet inference runtime |
 | NLLB-200 (translate cascade, default) | **CC-BY-NC-4.0** | personal / non-commercial |
 | M2M-100 1.2B (translate cascade, optional) | **MIT** | commercial use |
